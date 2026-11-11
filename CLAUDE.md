@@ -27,6 +27,11 @@ Self-host Project MUSE **post-termination access (PTA)** journal PDFs for Wheato
 - The issue folder is MUSE's internal issue ID, **not** the issue number. Issue number and date must come from the HTML `citation_*` meta tags, the PDFs, or muse.jhu.edu.
 - `muse_listing.txt` is about 200 MB. Process it with streaming tools (awk or Python), never by reading the whole file.
 - At this object count, use **S3 Batch Operations** with CSV manifests for the restore and copy. Don't loop over objects with the CLI.
+- **The bucket policy denies** object and version deletes, bucket deletion, `PutLifecycleConfiguration` and `PutBucketVersioning`. Never remove those statements. Old DEEP_ARCHIVE versions left by in-place copies are intentionally kept.
+- **Live access layer:** distribution `EWK48TT92QAN` (`d2cfus91tk2xx.cloudfront.net`), WAF `muse-pta-acl` / IP set `muse-pta-allow`, OAC `ETMS8EHK4MXVR`. IPv6 stays off. Details are in README.md.
+- **Hosted EZproxy** is `wheatonma.idm.oclc.org` (`EZPROXY_IP`). It is OCLC-hosted, so stanza changes go through OCLC's hosted config.
+- **WMS target collection** is `Muse.MuseAll` (Project Muse All Journals, link scheme `muse`). The user handles the link-scheme override and KBART upload in WMS. We produce a KBART with `covoverlay` coverage rows and `overlay` `title_url` rows. Titles can't be added to a global collection by KBART, so extras need a local collection.
+- **Pilot first:** prove the whole chain with `ab_autobiography_studies` before confirming the full restore job (`6b10cdae-fc86-46d0-85b0-d6ab8581ebd6`, parked in Suspended).
 
 ## Settled architecture decisions (don't re-litigate)
 
