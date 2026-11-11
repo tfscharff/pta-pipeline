@@ -3,7 +3,8 @@
 #   aws s3control update-job-status --account-id <acct> --job-id <id> --requested-job-status Ready
 param(
     [string]$ManifestKey = 'manifests/restore_all.csv',
-    [int]$Days = 7
+    [int]$Days = 7,
+    [string]$Label = 'all'
 )
 $ErrorActionPreference = 'Stop'
 $Account = aws sts get-caller-identity --query Account --output text
@@ -26,5 +27,5 @@ $operation | Set-Content "$tmp/op.json"; $manifest | Set-Content "$tmp/manifest.
 aws s3control create-job --account-id $Account --confirmation-required `
     --operation "file://$tmp/op.json" --manifest "file://$tmp/manifest.json" --report "file://$tmp/report.json" `
     --priority 10 --role-arn "arn:aws:iam::${Account}:role/muse-pta-batchops" `
-    --description "MUSE PTA: restore all from DEEP_ARCHIVE (Bulk, $Days days)" `
+    --description "MUSE PTA: restore $Label from DEEP_ARCHIVE (Bulk, $Days days)" `
     --client-request-token ([guid]::NewGuid().ToString())
