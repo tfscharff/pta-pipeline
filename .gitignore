@@ -1,0 +1,10 @@
+# Large/generated data (regenerate from S3)
+muse_listing.txt
+manifests/
+work/
+logs/
+*.log
+# Source data supplied by vendor
+kbart/raw/
+__pycache__/
+.venv/
