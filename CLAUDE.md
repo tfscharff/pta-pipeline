@@ -18,7 +18,7 @@ Self-host Project MUSE **post-termination access (PTA)** journal PDFs for Wheato
 1. `muse_listing.txt`: tab-separated `Key  StorageClass  Size`, produced by
    `aws s3api list-objects-v2 --bucket BUCKET --query "Contents[].[Key,StorageClass,Size]" --output text > muse_listing.txt`
 2. The MUSE KBART file for the cancelled journal collection.
-3. Bucket name and region, campus CIDRs, EZproxy outbound IP(s), and the final hostname (placeholder: `muse-pta.wheatoncollege.edu`).
+3. Campus CIDRs and EZproxy outbound IP(s).
 
 ## Known facts (from `analysis/01_listing_analysis.md`)
 
@@ -32,7 +32,8 @@ Self-host Project MUSE **post-termination access (PTA)** journal PDFs for Wheato
 
 - **Storage:** PDFs go to `GLACIER_IR` (expected use of a few thousand downloads a year is far below the break-even point against Standard). HTML index pages stay in `STANDARD`.
 - **Access path:** private bucket (Block Public Access ON) → CloudFront with **Origin Access Control** on the **REST** endpoint → **AWS WAF** web ACL (CloudFront scope, us-east-1) that allows an IP set of campus CIDRs plus EZproxy outbound IPs, default action Block → EZproxy stanza for the CloudFront hostname → WMS local collection with proxying on.
-- **CloudFront:** HTTPS redirect, GET/HEAD only, CachingOptimized policy, PriceClass_100. Optional standard logging to a separate bucket. The ACM cert lives in us-east-1.
+- **CloudFront:** HTTPS redirect, GET/HEAD only, CachingOptimized policy, PriceClass_100. Optional standard logging to `wheaton-muse-pta-ops`.
+- **Default hostname.** There is no custom hostname, ACM cert or DNS record. Use the distribution's default `*.cloudfront.net` hostname and default certificate. Never delete or recreate the distribution, because that changes the hostname and breaks every KBART link and the EZproxy stanza. (Fallback if a readable name is ever wanted: a domain registered in Route 53.)
 - **Linking is title-level:** each journal gets a generated `index.html` listing its volumes, issues and articles, with relative PDF links. KBART `title_url` must point explicitly at `.../index.html`, because S3 REST origins don't resolve directory indexes.
 
 ## Pipeline order
@@ -42,12 +43,12 @@ Self-host Project MUSE **post-termination access (PTA)** journal PDFs for Wheato
 3. Convert in place to GLACIER_IR with `--force-glacier-transfer`. For PDFs, also pass `--metadata-directive REPLACE --content-type application/pdf`. Give non-PDFs their correct content types. Afterward, verify that every object is GLACIER_IR.
 4. Check the lifecycle (`get-bucket-lifecycle-configuration`) and change any rule that would move objects back to Glacier.
 5. Generate the index pages: static, accessible HTML with no external assets, one per journal (title, ISSNs, publisher, volumes/issues/articles) plus a top-level index. Upload them with `text/html; charset=utf-8`, STANDARD class.
-6. Infrastructure, in this order: ACM → WAF → CloudFront → bucket policy → DNS.
-7. EZproxy stanza:
+6. Infrastructure, in this order: WAF → CloudFront → bucket policy.
+7. EZproxy stanza, using the distribution's hostname:
    ```
    Title Project MUSE Post-Termination Access (Wallace Library)
-   URL https://muse-pta.wheatoncollege.edu/
-   Host muse-pta.wheatoncollege.edu
+   URL https://<dist>.cloudfront.net/
+   Host <dist>.cloudfront.net
    ```
 8. Build the WMS KBART for a Collection Manager local collection by joining the MUSE KBART to the actual S3 holdings:
    - Fields: standard journal KBART fields plus `oclc_number` where available, with `coverage_depth=fulltext` and `publication_type=serial`.
@@ -68,6 +69,6 @@ Self-host Project MUSE **post-termination access (PTA)** journal PDFs for Wheato
   - in-place storage-class copies (GLACIER_IR has a 90-day minimum storage charge);
   - lifecycle or bucket-policy changes;
   - Block Public Access changes;
-  - creating or deleting CloudFront, WAF or ACM resources.
+  - creating or deleting CloudFront or WAF resources.
 - Read-only AWS calls (`list-*`, `get-*`, `head-object`) need no confirmation.
 - Before running a mutating script against the real bucket, offer a dry-run mode or a small test prefix first.
