@@ -11,8 +11,8 @@ Tooling for self-hosting Wheaton College's Project MUSE post-termination access 
 | 3. Convert to GLACIER_IR | Not started |
 | 4. Lifecycle | Nothing to do. The bucket policy denies `PutLifecycleConfiguration`, so nothing can transition objects back to Glacier. Old DEEP_ARCHIVE versions are kept as a backup (about $0.75/month). |
 | 5. Index pages | Placeholder root `index.html` uploaded |
-| 6. Infrastructure | WAF, OAC, CloudFront and bucket policy are live. Off-campus access returns 403 from WAF. |
-| 7. EZproxy / KBART / WMS / tests | EZproxy stanza drafted. Not yet added. |
+| 6. Infrastructure | WAF, OAC, CloudFront and bucket policy are live. On-campus access loads the placeholder (verified 2026-11-12). Off-campus access returns 403 from WAF. |
+| 7. EZproxy / KBART / WMS / tests | EZproxy stanza being requested from OCLC. |
 
 ## Access
 
