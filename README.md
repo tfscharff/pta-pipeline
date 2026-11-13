@@ -7,8 +7,8 @@ Tooling for self-hosting Wheaton College's Project MUSE post-termination access 
 | Step | State |
 |---|---|
 | 1. Listing analysis | Done: [analysis/01_listing_analysis.md](analysis/01_listing_analysis.md) |
-| 2. Restore from DEEP_ARCHIVE | **Pilot** (`ab_autobiography_studies/`, 364 objects) restoring. The full job (`6b10cdae…`) is parked in Suspended until the pilot proves out. |
-| 3. Convert to GLACIER_IR | Not started |
+| 2. Restore from DEEP_ARCHIVE | **Pilot** (`ab_autobiography_studies/`, 364 objects) restored 2026-11-13. The full job (`6b10cdae…`) is parked in Suspended until the pilot proves out. |
+| 3. Convert to GLACIER_IR | **Pilot** converted by Batch job `dc5b04f5…` (364/364 succeeded, all verified GLACIER_IR). Full run not started. |
 | 4. Lifecycle | Nothing to do. The bucket policy denies `PutLifecycleConfiguration`, so nothing can transition objects back to Glacier. Old DEEP_ARCHIVE versions are kept as a backup (about $0.75/month). |
 | 5. Index pages | Placeholder root `index.html` uploaded |
 | 6. Infrastructure | WAF, OAC, CloudFront and bucket policy are live. On-campus access loads the placeholder (verified 2026-11-12). Off-campus access returns 403 from WAF. |
@@ -43,6 +43,12 @@ Create the restore job. It waits in Suspended until confirmed:
 
 ```
 ./infra/batchops/create-restore-job.ps1
+```
+
+After the restore completes, create the in-place GLACIER_IR copy job. It also waits in Suspended until confirmed, and it copies metadata (Content-Type) unchanged:
+
+```
+./infra/batchops/create-copy-job.ps1 -ManifestKey manifests/restore_all.csv
 ```
 
 Check job status and restore progress:
