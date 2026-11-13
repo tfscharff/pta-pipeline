@@ -3,16 +3,97 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Project MUSE Post-Termination Access | Wallace Library</title>
+<meta name="robots" content="noindex, nofollow">
+<title>Project MUSE journal archive | Wallace Library</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #1a1a1a; background: #fff; }
-  h1 { font-size: 1.5rem; }
+:root{--bg:#F4F6F8;--ink:#17202B;--muted:#475263;--rule:#C9D1DB;--accent:#1D3D6E;--rail:#1D3D6E;--mark:#FFE9A8;--focus:#1D3D6E;
+--serif:"Iowan Old Style","Palatino Linotype","Book Antiqua",Palatino,"URW Palladio L",P052,Georgia,serif;
+--sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#10161D;--ink:#E7ECF2;--muted:#AEB8C6;--rule:#2C3A49;--accent:#A9C8FF;--rail:#8FB3EE;--mark:#4A3B00;--focus:#A9C8FF}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:1.0625rem/1.6 var(--sans)}
+a{color:var(--accent);text-underline-offset:.18em;text-decoration-thickness:1px}
+a:hover{text-decoration-thickness:2px}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:2px}
+.skip{position:absolute;left:-999px;top:0;background:var(--bg);padding:.5rem 1rem}
+.skip:focus{left:1rem;top:1rem}
+.wrap{max-width:54rem;margin:0 auto;padding:2rem 1rem 4rem}
+.crumb{font-size:.9375rem;margin:0 0 2.5rem;color:var(--muted)}
+h1{font:600 clamp(2rem,5vw,3rem)/1.1 var(--serif);margin:0 0 1rem;letter-spacing:-.01em;max-width:22ch}
+.about{color:var(--muted);margin:0 0 .25rem;max-width:62ch}
+.find{margin:2.25rem 0 2.75rem;padding:1.25rem 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.find label{display:block;font-weight:600;margin-bottom:.4rem}
+.find input{width:100%;max-width:32rem;font:inherit;color:var(--ink);background:transparent;border:1px solid var(--muted);border-radius:4px;padding:.55rem .7rem}
+.find p{margin:.5rem 0 0;color:var(--muted);font-size:.9375rem}
+.vol{display:grid;grid-template-columns:7.5rem 1fr;gap:0 1.5rem;padding:1.75rem 0;border-top:1px solid var(--rule)}
+main>.vol:first-child,main>.vol[hidden]+.vol{border-top:0;padding-top:0}
+.nw{white-space:nowrap}
+.vol>h2{margin:0;font-weight:400;align-self:start;position:sticky;top:1rem;color:var(--rail)}
+.vlabel{display:block;font:600 .875rem/1.2 var(--sans);color:var(--muted)}
+.vnum{display:block;font:400 3.75rem/1 var(--serif);font-variant-numeric:oldstyle-nums;letter-spacing:-.02em}
+.vyear{display:block;font:400 1rem/1.4 var(--sans);color:var(--muted);margin-top:.25rem}
+.issue{margin:0 0 2rem}
+.issue:last-child{margin-bottom:0}
+.issue>h3{font:600 1.0625rem/1.4 var(--sans);margin:0 0 .75rem;scroll-margin-top:1rem}
+.issue.hit>h3,.art.hit{background:var(--mark)}
+ol{list-style:none;margin:0;padding:0}
+.art{padding:.35rem 0 .85rem}
+.art .t{font:500 1.1875rem/1.4 var(--serif)}
+.art p{margin:.15rem 0 0;color:var(--muted);font-size:.9375rem}
+.art p a{color:var(--accent)}
+.jl li{padding:.9rem 0;border-top:1px solid var(--rule)}
+.jl li:first-child{border-top:0;padding-top:0}
+.jl .t{font:500 1.25rem/1.35 var(--serif)}
+.jl p{margin:.2rem 0 0;color:var(--muted);font-size:.9375rem}
+footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--rule);color:var(--muted);font-size:.9375rem;max-width:62ch}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+[hidden]{display:none!important}
+@media (max-width:40rem){.vol{grid-template-columns:1fr}.vol>h2{position:static;display:flex;align-items:baseline;gap:.6rem;margin-bottom:1rem}
+.vlabel{font:400 1.75rem/1 var(--serif);color:var(--rail)}.vnum{font-size:1.75rem}.vyear{margin:0}}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 </style>
 </head>
-<body>
-<main>
-  <h1>Project MUSE Post-Termination Access</h1>
-  <p>Madeleine Clark Wallace Library, Wheaton College. This archive is being prepared. The journal list will appear here soon.</p>
+<body data-noun="journals">
+<a class="skip" href="#list">Skip to the list</a>
+<div class="wrap">
+
+<header>
+<h1>Project MUSE journal archive</h1>
+<p class="about">Back issues of 1 journal the library licensed from Project MUSE. Choose a journal to see its volumes and articles.</p>
+</header>
+<div class="find" role="search">
+<label for="q">Find a journal by title, publisher or ISSN</label>
+<input id="q" type="search" autocomplete="off" spellcheck="false">
+<p id="status" role="status" aria-live="polite">1 journal.</p>
+</div>
+<main id="list">
+<ol class="jl">
+<li data-text="a/b: auto/biography studies the autobiography society 2151-7290 0898-9575"><a class="t" href="ab_autobiography_studies/index.html">a/b: Auto/Biography Studies</a><p>The Autobiography Society. Volumes 24–28 (2009–2013). 123 articles.</p></li>
+</ol>
 </main>
+<footer>
+<p>Madeleine Clark Wallace Library, Wheaton College. These are the library's archived copies of journal issues licensed from Project MUSE, for current Wheaton students, faculty and staff.</p>
+</footer>
+</div>
+<script>
+(function(){
+var input=document.getElementById('q'),status=document.getElementById('status'),items=[].slice.call(document.querySelectorAll('[data-text]'));
+var total=items.length,noun=document.body.getAttribute('data-noun');
+function fold(s){return s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'')}
+function run(){var terms=fold(input.value).split(/\s+/).filter(Boolean),shown=0;
+items.forEach(function(li){var ok=terms.every(function(t){return li.getAttribute('data-text').indexOf(t)>-1});li.hidden=!ok;if(ok)shown++});
+[].forEach.call(document.querySelectorAll('[data-group]'),function(g){g.hidden=!g.querySelector('[data-text]:not([hidden])')});
+status.textContent=terms.length?('Showing '+shown+' of '+total+' '+noun+'.'):(total+' '+noun+'.')}
+input.addEventListener('input',run);
+var p=new URLSearchParams(location.search);
+if(p.get('q')){input.value=p.get('q');run()}
+var v=p.get('volume'),n=p.get('issue'),y=p.get('year'),a=p.get('article'),target=null;
+if(a){target=document.getElementById('a'+a)}
+if(!target&&(v||n||y)){[].some.call(document.querySelectorAll('.issue'),function(s){
+if((!v||s.dataset.volume===v)&&(!n||s.dataset.number===n)&&(!y||s.dataset.year===y)){target=s;return true}})}
+if(target){target.classList.add('hit');var h=target.querySelector('h3')||target;h.setAttribute('tabindex','-1');h.scrollIntoView({block:'start',behavior:'instant'});h.focus({preventScroll:true})}
+})();
+</script>
 </body>
 </html>
