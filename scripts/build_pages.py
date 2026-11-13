@@ -1,25 +1,37 @@
 """Build static journal landing pages and the top-level index from MUSE article HTML.
 
-Reads article HTML downloaded from s3://project.muse/<slug>/ into <src>/<slug>/ (for example with
-`aws s3 sync s3://project.muse/<slug>/ work/<slug>/ --exclude "*" --include "*.html"`), plus the
-bucket listing so PDF-only articles are included. Writes:
+Article metadata (title, authors, volume/issue/year, pages, ISSNs) comes from each article's HTML,
+because the issue folder is MUSE's internal ID. The bucket listing supplies which articles exist
+(including PDF-only ones). Writes:
 
-  <out>/<slug>/index.html    one page per journal
-  <meta>/<slug>.json         journal summary used to build the top-level index
-  <out>/index.html           top-level journal list (every summary in <meta>)
+  <meta>/<slug>.articles.json  parsed article metadata cache (so pages rebuild without re-downloading)
+  <meta>/<slug>.json           journal summary used to build the top-level index
+  <out>/<slug>/index.html      one page per journal
+  <out>/index.html             top-level journal list (every summary in <meta>)
+
+With --fetch, each journal's article HTML is synced from S3 into a temporary folder under --tmp,
+parsed into the cache, and the temporary folder is removed. Otherwise HTML is read from <src>/<slug>/
+when present, falling back to the cache. With --upload, pages go to S3 as STANDARD text/html.
+Journals with a cache are skipped by --fetch, so a re-run resumes where it stopped.
 
 Usage:
   python scripts/build_pages.py --slug ab_autobiography_studies
+  python scripts/build_pages.py --all --fetch --upload --tmp <scratch dir>
 """
 import argparse
 import html
 import json
 import re
+import shutil
+import subprocess
+import time
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
-ARTICLE_KEY = re.compile(r'^(?P<slug>[^/]+)/(?P<vol>v[^/]+)/(?P<issue>[^/]+)/(?P<id>\d+)\.(?P<ext>pdf|html)$')
+BUCKET = 'project.muse'
+# <slug>/<vNNN|preprint>/<issue>/[<id>/]<id>.<ext>  (some journals add a per-article folder)
+ARTICLE_KEY = re.compile(r'^(?P<slug>[^/]+)/(?P<vol>v[^/]+|preprint)/(?P<issue>[^/]+)/(?:(?P<sub>\d+)/)?(?P<id>\d+)\.(?P<ext>pdf|html)$')
 TAG = re.compile(r'<[^>]+>')
 DETAIL_ROW = re.compile(r'<div class="cell label">\s*(.*?)\s*</div>\s*<div class="cell">\s*(.*?)\s*</div>', re.S)
 
@@ -79,16 +91,52 @@ def fold(s):
     return ''.join(c for c in unicodedata.normalize('NFKD', s.lower()) if not unicodedata.combining(c))
 
 
-def read_listing(listing, slugs):
-    """Return {slug: {(vol, issue, id): set(ext)}} for article-level keys, one streaming pass."""
-    out = {slug: defaultdict(set) for slug in slugs}
+def read_listing(listing, slugs=None):
+    """Return {slug: {(vol, issue, id): {'exts': set, 'base': key without extension}}}, one streaming pass.
+
+    slugs=None collects every journal."""
+    out = defaultdict(dict)
     with open(listing, encoding='utf-8') as f:
         for line in f:
             key = line.split('\t', 1)[0]
             m = ARTICLE_KEY.match(key)
-            if m and m['slug'] in out:
-                out[m['slug']][(m['vol'], m['issue'], m['id'])].add(m['ext'])
+            if not m or (slugs is not None and m['slug'] not in slugs):
+                continue
+            if m['sub'] and m['sub'] != m['id']:
+                continue
+            rec = out[m['slug']].setdefault((m['vol'], m['issue'], m['id']),
+                                            {'exts': set(), 'base': key[len(m['slug']) + 1:key.rindex('.')]})
+            rec['exts'].add(m['ext'])
     return out
+
+
+def parse_journal_html(slug, src, holdings):
+    """Parse every available article HTML under src/<slug>/ into {base: meta}."""
+    metas = {}
+    for rec in holdings.values():
+        hp = src / slug / f"{rec['base']}.html"
+        if 'html' in rec['exts'] and hp.exists():
+            try:
+                metas[rec['base']] = parse_article(hp)
+            except Exception as e:  # one bad file must not stop the journal
+                metas[rec['base']] = {'error': str(e)}
+    return metas
+
+
+def sync_html(slug, dest):
+    """Download a journal's article-level HTML (not figure pages) from S3."""
+    cmd = ['aws', 's3', 'sync', f's3://{BUCKET}/{slug}/', str(dest / slug), '--only-show-errors',
+           '--exclude', '*', '--include', '*.html']
+    for d in ('full', 'thumb', 'inline', 'file'):
+        cmd += ['--exclude', f'*/{d}/*']
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.returncode, r.stderr.strip()
+
+
+def upload(local, key):
+    cmd = ['aws', 's3', 'cp', str(local), f's3://{BUCKET}/{key}', '--only-show-errors', '--storage-class', 'STANDARD',
+           '--content-type', 'text/html; charset=utf-8', '--cache-control', 'max-age=300']
+    subprocess.run(cmd, check=True)
 
 
 CSS = """
@@ -190,22 +238,31 @@ def range_text(lo, hi):
     return lo if lo == hi else f'{lo}–{hi}'
 
 
-def build_journal(slug, src, holdings):
+def vol_span(vols):
+    vols = [v for v in vols if v]
+    if not vols:
+        return ''
+    return f"Volumes {range_text(vols[0], vols[-1])}" if vols[0] != vols[-1] else f"Volume {vols[0]}"
+
+
+def build_journal(slug, holdings, metas):
     issues = defaultdict(list)
+    preprints = []
     info = {}
-    for (vol_folder, issue_id, art_id), exts in holdings.items():
-        meta = {}
-        hp = src / slug / vol_folder / issue_id / f'{art_id}.html'
-        if 'html' in exts and hp.exists():
-            meta = parse_article(hp)
-            for k in ('journal', 'publisher', 'issn', 'print_issn'):
-                if meta.get(k) and not info.get(k):
-                    info[k] = meta[k]
-        issues[(vol_folder, issue_id)].append((art_id, exts, meta))
+    for (vol_folder, issue_id, art_id), rec in holdings.items():
+        meta = metas.get(rec['base']) or {}
+        for k in ('journal', 'publisher', 'issn', 'print_issn'):
+            if meta.get(k) and not info.get(k):
+                info[k] = meta[k]
+        item = (art_id, rec['exts'], meta, rec['base'])
+        if vol_folder == 'preprint':
+            preprints.append(item)
+        else:
+            issues[(vol_folder, issue_id)].append(item)
 
     groups = []
     for (vol_folder, issue_id), arts in issues.items():
-        designation = next((m['designation'] for _, _, m in arts if m.get('designation')), '')
+        designation = next((m['designation'] for _, _, m, _ in arts if m.get('designation')), '')
         vol, number, year = parse_designation(designation, vol_folder)
         arts.sort(key=lambda a: (num(a[2].get('pages')), int(a[0])))
         groups.append({'vol_folder': vol_folder, 'issue_id': issue_id, 'vol': vol, 'number': number, 'year': year,
@@ -216,9 +273,9 @@ def build_journal(slug, src, holdings):
     for g in groups:
         by_vol[g['vol']].append(g)
 
-    journal = info.get('journal') or slug
+    journal = info.get('journal') or slug.replace('_', ' ').title()
     years = sorted(g['year'] for g in groups if g['year'])
-    vols = list(by_vol)
+    vols = list(by_vol) or ['']
     n_articles = sum(len(g['arts']) for g in groups)
     issns = []
     if info.get('issn'):
@@ -231,13 +288,14 @@ def build_journal(slug, src, holdings):
         about.append(f"Published by {html.escape(info['publisher'])}.")
     if issns:
         about.append(', '.join(issns) + '.')
-    span = f"Volumes {range_text(vols[0], vols[-1])}" if len(vols) > 1 else f"Volume {vols[0]}"
+    span = vol_span(vols)
     if years:
         span += f", {range_text(years[0], years[-1])}"
+    holds = f'The library holds {html.escape(span)}. ' if span else ''
 
     out = [f'<header>\n<h1>{html.escape(journal)}</h1>',
            f'<p class="about">{" ".join(about)}</p>' if about else '',
-           f'<p class="about">The library holds {html.escape(span)}. Each article title opens the PDF.</p>\n</header>',
+           f'<p class="about">{holds}Each article title opens the PDF.</p>\n</header>',
            '<div class="find" role="search">',
            '<label for="q">Find an article by title or author</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
@@ -255,36 +313,52 @@ def build_journal(slug, src, holdings):
             out.append(f'<section class="issue" data-group id="{html.escape(anchor)}" data-volume="{html.escape(g["vol"])}" '
                        f'data-number="{html.escape(g["number"])}" data-year="{html.escape(g["year"])}">')
             out.append(f'<h3>{html.escape(heading)}</h3>\n<ol>')
-            for art_id, exts, m in g['arts']:
-                base = f"{g['vol_folder']}/{g['issue_id']}/{art_id}"
-                title = m.get('title') or f'Article {art_id}'
-                authors = ', '.join(m.get('authors', []))
-                bits = []
-                if authors:
-                    bits.append(html.escape(authors) + '.')
-                if m.get('type') and m['type'] != 'Article':
-                    bits.append(html.escape(m['type']) + '.')
-                if m.get('pages'):
-                    bits.append(f"Pages {html.escape(m['pages'].replace('-', '–'))}.")
-                if 'pdf' in exts:
-                    head = f'<a class="t" href="{base}.pdf">{html.escape(title)}</a>'
-                    if 'html' in exts:
-                        bits.append(f'<a href="{base}.html">Web version</a>')
-                else:
-                    head = f'<a class="t" href="{base}.html">{html.escape(title)}</a>'
-                    bits.append('Web version only.')
-                search = fold(' '.join([title, authors]))
-                out.append(f'<li class="art" id="a{art_id}" data-text="{html.escape(search)}">{head}<p>{" ".join(bits)}</p></li>')
+            out.extend(article_li(*a) for a in g['arts'])
             out.append('</ol>\n</section>')
         out.append('</div>\n</section>')
+    if preprints:
+        preprints.sort(key=lambda a: int(a[0]))
+        out.append('<section class="vol" data-group aria-labelledby="v-early">')
+        out.append('<h2 id="v-early"><span class="vlabel">Early release</span></h2>\n<div>')
+        out.append('<section class="issue" data-group id="early"><h3>Articles published online before their issue</h3>\n<ol>')
+        out.extend(article_li(*a) for a in preprints)
+        out.append('</ol>\n</section>\n</div>\n</section>')
     out.append('</main>')
 
     crumb = '<p class="crumb"><a href="../index.html">All archived Project MUSE journals</a></p>'
     doc = page(f'{journal} | Wallace Library Project MUSE archive', '\n'.join(x for x in out if x), 'articles', crumb)
+    all_arts = [a for g in groups for a in g['arts']] + preprints
     summary = {'slug': slug, 'journal': journal, 'publisher': info.get('publisher', ''), 'issn': info.get('issn', ''),
                'print_issn': info.get('print_issn', ''), 'volumes': [vols[0], vols[-1]],
-               'years': [years[0], years[-1]] if years else [], 'articles': n_articles}
+               'years': [years[0], years[-1]] if years else [], 'articles': len(all_arts),
+               'issues': [{'volume': g['vol'], 'number': g['number'], 'year': g['year'], 'designation': g['designation'],
+                           'folder': f"{g['vol_folder']}/{g['issue_id']}", 'articles': len(g['arts'])} for g in groups],
+               'quality': {'no_metadata': sum(1 for a in all_arts if not a[2].get('title')),
+                           'no_designation': sum(1 for g in groups if not g['designation']),
+                           'parse_errors': sum(1 for a in all_arts if a[2].get('error')),
+                           'preprints': len(preprints)}}
     return doc, summary
+
+
+def article_li(art_id, exts, m, base):
+    title = m.get('title') or 'Untitled article (no title on file)'
+    authors = ', '.join(m.get('authors', []))
+    bits = []
+    if authors:
+        bits.append(html.escape(authors) + '.')
+    if m.get('type') and m['type'] != 'Article':
+        bits.append(html.escape(m['type']) + '.')
+    if m.get('pages'):
+        bits.append(f"Pages {html.escape(m['pages'].replace('-', '–'))}.")
+    if 'pdf' in exts:
+        head = f'<a class="t" href="{base}.pdf">{html.escape(title)}</a>'
+        if 'html' in exts:
+            bits.append(f'<a href="{base}.html">Web version</a>')
+    else:
+        head = f'<a class="t" href="{base}.html">{html.escape(title)}</a>'
+        bits.append('Web version only.')
+    search = fold(' '.join([title, authors]))
+    return f'<li class="art" id="a{art_id}" data-text="{html.escape(search)}">{head}<p>{" ".join(bits)}</p></li>'
 
 
 def build_index(summaries):
@@ -298,10 +372,10 @@ def build_index(summaries):
            '<main id="list">\n<ol class="jl">']
     for s in summaries:
         v, y = s['volumes'], s['years']
-        span = f"Volumes {range_text(v[0], v[1])}" if v[0] != v[1] else f"Volume {v[0]}"
+        span = vol_span(v)
         if y:
             span += f" ({range_text(y[0], y[1])})"
-        meta = ' '.join(x for x in [html.escape(s['publisher']) + '.' if s['publisher'] else '', html.escape(span) + '.',
+        meta = ' '.join(x for x in [html.escape(s['publisher']) + '.' if s['publisher'] else '', html.escape(span) + '.' if span else '',
                                      f"{s['articles']} articles."] if x)
         search = fold(' '.join([s['journal'], s['publisher'], s['issn'], s['print_issn']]))
         out.append(f'<li data-text="{html.escape(search)}"><a class="t" href="{s["slug"]}/index.html">{html.escape(s["journal"])}</a><p>{meta}</p></li>')
@@ -311,26 +385,74 @@ def build_index(summaries):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--slug', action='append', required=True, help='journal folder; repeat for several')
-    ap.add_argument('--src', default='work', type=Path, help='folder holding downloaded <slug>/ HTML')
+    sel = ap.add_mutually_exclusive_group(required=True)
+    sel.add_argument('--slug', action='append', help='journal folder; repeat for several')
+    sel.add_argument('--all', action='store_true', help='every journal in the listing')
+    ap.add_argument('--src', default='work', type=Path, help='folder holding downloaded <slug>/ HTML (without --fetch)')
+    ap.add_argument('--fetch', action='store_true', help='sync HTML from S3 into --tmp, parse, then remove it')
+    ap.add_argument('--refetch', action='store_true', help='with --fetch, re-download journals that already have a cache')
+    ap.add_argument('--tmp', type=Path, help='temporary download folder for --fetch')
+    ap.add_argument('--upload', action='store_true', help='upload pages to S3 (STANDARD, text/html)')
     ap.add_argument('--listing', default='muse_listing.txt')
     ap.add_argument('--out', default='site', type=Path)
     ap.add_argument('--meta', default='work/meta', type=Path)
+    ap.add_argument('--log', default='logs/build_pages.log', type=Path)
     a = ap.parse_args()
+    if a.fetch and not a.tmp:
+        ap.error('--fetch needs --tmp')
 
     a.meta.mkdir(parents=True, exist_ok=True)
-    holdings = read_listing(a.listing, a.slug)
-    for slug in a.slug:
-        if not holdings[slug]:
-            raise SystemExit(f'no article-level keys for {slug} in {a.listing}')
-        doc, summary = build_journal(slug, a.src, holdings[slug])
+    a.log.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(msg):
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+        print(line, flush=True)
+        with open(a.log, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+
+    holdings = read_listing(a.listing, None if a.all else set(a.slug))
+    slugs = sorted(holdings) if a.all else a.slug
+    log(f'start: {len(slugs)} journal(s), fetch={a.fetch}, upload={a.upload}')
+    for i, slug in enumerate(slugs, 1):
+        if not holdings.get(slug):
+            log(f'[{i}/{len(slugs)}] {slug}: SKIP, no article-level keys in listing')
+            continue
+        cache = a.meta / f'{slug}.articles.json'
+        if a.fetch and (a.refetch or not cache.exists()):
+            t0 = time.time()
+            rc, err = sync_html(slug, a.tmp)
+            if rc not in (0, 2):  # 2 = some files skipped; anything else is a failure
+                log(f'[{i}/{len(slugs)}] {slug}: SYNC FAILED rc={rc} {err[:500]}')
+                continue
+            metas = parse_journal_html(slug, a.tmp, holdings[slug])
+            cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')
+            shutil.rmtree(a.tmp / slug, ignore_errors=True)
+            log(f'[{i}/{len(slugs)}] {slug}: fetched and parsed {len(metas)} HTML in {time.time() - t0:.0f}s'
+                + (f' (sync rc=2: {err[:300]})' if rc == 2 else ''))
+        elif not a.fetch and (a.src / slug).exists():
+            metas = parse_journal_html(slug, a.src, holdings[slug])
+            cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')
+        elif cache.exists():
+            metas = json.loads(cache.read_text(encoding='utf-8'))
+        else:
+            metas = {}
+        doc, summary = build_journal(slug, holdings[slug], metas)
         (a.out / slug).mkdir(parents=True, exist_ok=True)
-        (a.out / slug / 'index.html').write_text(doc, encoding='utf-8', newline='\n')
+        page_path = a.out / slug / 'index.html'
+        page_path.write_text(doc, encoding='utf-8', newline='\n')
         (a.meta / f'{slug}.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding='utf-8')
-        print(f"{slug}: {summary['articles']} articles, volumes {summary['volumes']}, years {summary['years']}")
-    summaries = [json.loads(p.read_text(encoding='utf-8')) for p in sorted(a.meta.glob('*.json'))]
+        if a.upload:
+            upload(page_path, f'{slug}/index.html')
+        q = summary['quality']
+        log(f"[{i}/{len(slugs)}] {slug}: {summary['articles']} articles, volumes {summary['volumes']}, "
+            f"years {summary['years']}, no_metadata={q['no_metadata']}, no_designation={q['no_designation']}, "
+            f"errors={q['parse_errors']}, preprints={q['preprints']}{', uploaded' if a.upload else ''}")
+    summaries = [json.loads(p.read_text(encoding='utf-8')) for p in sorted(a.meta.glob('*.json'))
+                 if not p.name.endswith('.articles.json')]
     (a.out / 'index.html').write_text(build_index(summaries), encoding='utf-8', newline='\n')
-    print(f'index: {len(summaries)} journal(s)')
+    if a.upload:
+        upload(a.out / 'index.html', 'index.html')
+    log(f'done: index lists {len(summaries)} journal(s)')
 
 
 if __name__ == '__main__':
