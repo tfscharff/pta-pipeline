@@ -125,8 +125,9 @@ def parse_journal_html(slug, src, holdings):
 
 def sync_html(slug, dest):
     """Download a journal's article-level HTML (not figure pages) from S3."""
+    # --force-glacier-transfer: the CLI otherwise skips GLACIER/DEEP_ARCHIVE objects even when restored.
     cmd = ['aws', 's3', 'sync', f's3://{BUCKET}/{slug}/', str(dest / slug), '--only-show-errors',
-           '--exclude', '*', '--include', '*.html']
+           '--force-glacier-transfer', '--exclude', '*', '--include', '*.html']
     for d in ('full', 'thumb', 'inline', 'file'):
         cmd += ['--exclude', f'*/{d}/*']
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -421,8 +422,11 @@ def main():
         if a.fetch and (a.refetch or not cache.exists()):
             t0 = time.time()
             rc, err = sync_html(slug, a.tmp)
-            if rc not in (0, 2):  # 2 = some files skipped; anything else is a failure
+            # rc 2 = some files skipped. Skips for storage class (object not restored) are failures: no cache is
+            # written, so a re-run retries the journal.
+            if rc not in (0, 2) or 'storage class' in err or 'restore the object' in err:
                 log(f'[{i}/{len(slugs)}] {slug}: SYNC FAILED rc={rc} {err[:500]}')
+                shutil.rmtree(a.tmp / slug, ignore_errors=True)
                 continue
             metas = parse_journal_html(slug, a.tmp, holdings[slug])
             cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')
