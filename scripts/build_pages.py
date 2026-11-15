@@ -123,6 +123,83 @@ def parse_journal_html(slug, src, holdings):
     return metas
 
 
+# Cover-page citation line, e.g. "The Thomist: A Speculative Quarterly Review, Volume 3, Number 1, January 1941,
+# pp. 1-7 (Article)". The designation starts at the first Volume/Number/Issue-style keyword after a comma.
+DESIG_WORDS = r'(?:Volumes?|Numbers?|Issues?|Vol\.|No\.|Nos\.|Years?|Supplement|Special Issue|Annual)\b'
+CITATION = re.compile(r'^(?P<journal>.+?), (?P<desig>' + DESIG_WORDS + r'.*?)(?:, (?P<pages>pp?\.\s*[^()]+?))?\s*\((?P<type>[^()]*)\)$')
+
+
+def norm(s):
+    return re.sub(r'\s+', ' ', unicodedata.normalize('NFC', s or '')).strip()
+
+
+def parse_pdf(path, art_id):
+    """Article metadata from a MUSE PDF: title/author from the document info, the rest from the cover page."""
+    from pypdf import PdfReader  # only needed for --pdf
+    r = PdfReader(path)
+    info = r.metadata or {}
+    title, author = norm(info.get('/Title')), norm(info.get('/Author'))
+    lines = [norm(l) for l in (r.pages[0].extract_text() or '').splitlines()]
+    lines = [l for l in lines if l]
+    cut = next((i for i, l in enumerate(lines) if l.startswith('Published by')), None)
+    publisher = lines[cut][len('Published by'):].strip() if cut is not None else ''
+    head = lines[:cut] if cut is not None else lines
+    rest = ' '.join(head)
+    for part in (title, author):  # the cover repeats title then author before the citation
+        if part and rest.startswith(part):
+            rest = rest[len(part):].strip()
+    m = CITATION.match(rest)
+    if not m:  # title/author not on the cover as given: take the shortest tail that parses as a citation
+        for i in range(len(head) - 1, -1, -1):
+            m = CITATION.match(' '.join(head[i:]))
+            if m:
+                if not title:
+                    title = ' '.join(head[:i])
+                break
+    body = '\n'.join(lines)
+    cover_id = first(r'muse\.jhu\.edu/article/(\d+)', body, 0)
+    meta = {'src': 'pdf', 'title': '', 'authors': [author] if author else [], 'publisher': publisher,
+            'doi': first(r'doi\.org/(\S+)', body, 0)}
+    if cover_id and cover_id != art_id:
+        meta['error'] = f'cover page is for article {cover_id}'
+        return meta
+    typ = m['type'].strip() if m else ''
+    if re.search(r'\s*\(review\)$', title, re.I):
+        title, typ = re.sub(r'\s*\(review\)$', '', title, flags=re.I), 'Review'
+    meta.update(title=title, type=typ)
+    if m:
+        meta.update(journal=m['journal'], designation=m['desig'].strip(' ,'),
+                    pages=re.sub(r'^pp?\.\s*', '', (m['pages'] or '').strip()))
+    return meta
+
+
+def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400):
+    """Download the given article PDFs in batches, parse each, delete them. Returns ({base: meta}, failures)."""
+    import logging
+    logging.getLogger('pypdf').setLevel(logging.ERROR)  # font-table warnings are noise
+    metas, failures = {}, []
+    dest = tmp / slug
+    for i in range(0, len(bases), chunk):
+        part = bases[i:i + chunk]
+        cmd = ['aws', 's3', 'cp', f's3://{BUCKET}/{slug}/', str(dest), '--recursive', '--only-show-errors', '--exclude', '*']
+        for b in part:
+            cmd += ['--include', f'{b}.pdf']
+        rc = subprocess.run(cmd, capture_output=True, text=True)
+        for b in part:
+            p = dest / f'{b}.pdf'
+            if not p.exists():
+                failures.append(b)
+                continue
+            try:
+                metas[b] = parse_pdf(p, b.rsplit('/', 1)[-1])
+            except Exception as e:
+                metas[b] = {'src': 'pdf', 'error': f'{type(e).__name__}: {e}'}
+        shutil.rmtree(dest, ignore_errors=True)
+        if rc.returncode:
+            log(f'  {slug}: cp rc={rc.returncode} {rc.stderr.strip()[:300]}')
+    return metas, failures
+
+
 def sync_html(slug, dest):
     """Download a journal's article-level HTML (not figure pages) from S3."""
     # --force-glacier-transfer: the CLI otherwise skips GLACIER/DEEP_ARCHIVE objects even when restored.
@@ -249,18 +326,20 @@ def vol_span(vols):
 def build_journal(slug, holdings, metas):
     issues = defaultdict(list)
     preprints = []
-    info = {}
+    info, pdf_info = {}, {}
     for (vol_folder, issue_id, art_id), rec in holdings.items():
         meta = metas.get(rec['base']) or {}
+        into = pdf_info if meta.get('src') == 'pdf' else info  # prefer journal details from article HTML
         for k in ('journal', 'publisher', 'issn', 'print_issn'):
-            if meta.get(k) and not info.get(k):
-                info[k] = meta[k]
+            if meta.get(k) and not into.get(k):
+                into[k] = meta[k]
         item = (art_id, rec['exts'], meta, rec['base'])
         if vol_folder == 'preprint':
             preprints.append(item)
         else:
             issues[(vol_folder, issue_id)].append(item)
 
+    info = {**pdf_info, **info}
     groups = []
     for (vol_folder, issue_id), arts in issues.items():
         designation = next((m['designation'] for _, _, m, _ in arts if m.get('designation')), '')
@@ -337,6 +416,7 @@ def build_journal(slug, holdings, metas):
                'quality': {'no_metadata': sum(1 for a in all_arts if not a[2].get('title')),
                            'no_designation': sum(1 for g in groups if not g['designation']),
                            'parse_errors': sum(1 for a in all_arts if a[2].get('error')),
+                           'from_pdf': sum(1 for a in all_arts if a[2].get('src') == 'pdf' and a[2].get('title')),
                            'preprints': len(preprints)}}
     return doc, summary
 
@@ -392,15 +472,18 @@ def main():
     ap.add_argument('--src', default='work', type=Path, help='folder holding downloaded <slug>/ HTML (without --fetch)')
     ap.add_argument('--fetch', action='store_true', help='sync HTML from S3 into --tmp, parse, then remove it')
     ap.add_argument('--refetch', action='store_true', help='with --fetch, re-download journals that already have a cache')
-    ap.add_argument('--tmp', type=Path, help='temporary download folder for --fetch')
+    ap.add_argument('--pdf', action='store_true',
+                    help='for articles the HTML gave no title (PDF-only), read title etc. from the PDF (needs pypdf)')
+    ap.add_argument('--refetch-pdf', action='store_true', help='with --pdf, redo journals that already have a PDF cache')
+    ap.add_argument('--tmp', type=Path, help='temporary download folder for --fetch / --pdf')
     ap.add_argument('--upload', action='store_true', help='upload pages to S3 (STANDARD, text/html)')
     ap.add_argument('--listing', default='muse_listing.txt')
     ap.add_argument('--out', default='site', type=Path)
     ap.add_argument('--meta', default='work/meta', type=Path)
     ap.add_argument('--log', default='logs/build_pages.log', type=Path)
     a = ap.parse_args()
-    if a.fetch and not a.tmp:
-        ap.error('--fetch needs --tmp')
+    if (a.fetch or a.pdf) and not a.tmp:
+        ap.error('--fetch and --pdf need --tmp')
 
     a.meta.mkdir(parents=True, exist_ok=True)
     a.log.parent.mkdir(parents=True, exist_ok=True)
@@ -440,6 +523,23 @@ def main():
             metas = json.loads(cache.read_text(encoding='utf-8'))
         else:
             metas = {}
+        # PDF-derived metadata fills articles the HTML could not (cached in <slug>.pdf.json).
+        pdf_cache = a.meta / f'{slug}.pdf.json'
+        pdf_metas = json.loads(pdf_cache.read_text(encoding='utf-8')) if pdf_cache.exists() else {}
+        if a.pdf and (a.refetch_pdf or not pdf_cache.exists()):
+            want = [rec['base'] for rec in holdings[slug].values()
+                    if 'pdf' in rec['exts'] and not (metas.get(rec['base']) or {}).get('title')]
+            if want:
+                t0 = time.time()
+                pdf_metas, fails = fetch_parse_pdfs(slug, want, a.tmp, log)
+                if fails:  # no cache, so a re-run retries this journal
+                    log(f'[{i}/{len(slugs)}] {slug}: PDF FETCH FAILED for {len(fails)} of {len(want)}, e.g. {fails[0]}')
+                else:
+                    pdf_cache.write_text(json.dumps(pdf_metas, ensure_ascii=False), encoding='utf-8')
+                log(f'[{i}/{len(slugs)}] {slug}: parsed {len(pdf_metas)} PDFs in {time.time() - t0:.0f}s')
+        for b, pm in pdf_metas.items():
+            if not (metas.get(b) or {}).get('title'):
+                metas[b] = pm
         doc, summary = build_journal(slug, holdings[slug], metas)
         (a.out / slug).mkdir(parents=True, exist_ok=True)
         page_path = a.out / slug / 'index.html'
@@ -450,9 +550,9 @@ def main():
         q = summary['quality']
         log(f"[{i}/{len(slugs)}] {slug}: {summary['articles']} articles, volumes {summary['volumes']}, "
             f"years {summary['years']}, no_metadata={q['no_metadata']}, no_designation={q['no_designation']}, "
-            f"errors={q['parse_errors']}, preprints={q['preprints']}{', uploaded' if a.upload else ''}")
+            f"errors={q['parse_errors']}, preprints={q['preprints']}, from_pdf={q['from_pdf']}{', uploaded' if a.upload else ''}")
     summaries = [json.loads(p.read_text(encoding='utf-8')) for p in sorted(a.meta.glob('*.json'))
-                 if not p.name.endswith('.articles.json')]
+                 if not p.name.endswith(('.articles.json', '.pdf.json'))]
     (a.out / 'index.html').write_text(build_index(summaries), encoding='utf-8', newline='\n')
     if a.upload:
         upload(a.out / 'index.html', 'index.html')
