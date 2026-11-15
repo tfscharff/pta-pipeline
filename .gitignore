@@ -8,3 +8,6 @@ logs/
 kbart/raw/
 __pycache__/
 .venv/
+# Generated journal pages (about 200 MB; the copies in s3://project.muse are canonical). Keep the index and the pilot.
+site/*/
+!site/ab_autobiography_studies/
