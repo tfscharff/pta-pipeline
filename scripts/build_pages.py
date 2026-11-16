@@ -14,9 +14,15 @@ parsed into the cache, and the temporary folder is removed. Otherwise HTML is re
 when present, falling back to the cache. With --upload, pages go to S3 as STANDARD text/html.
 Journals with a cache are skipped by --fetch, so a re-run resumes where it stopped.
 
+With --pdf (needs `pip install pypdf`), PDF-only articles (no HTML) get title, author, volume/issue/
+date, pages and DOI from the MUSE cover page of the PDF, cached in <meta>/<slug>.pdf.json. A PDF whose
+cover names a different article ID (MUSE filed one PDF under several IDs) is recorded as an error and
+left untitled. --refetch-pdf ignores that cache.
+
 Usage:
   python scripts/build_pages.py --slug ab_autobiography_studies
   python scripts/build_pages.py --all --fetch --upload --tmp <scratch dir>
+  python scripts/build_pages.py --all --pdf --upload --tmp <scratch dir>
 """
 import argparse
 import html
