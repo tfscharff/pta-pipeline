@@ -146,6 +146,12 @@ def main():
                 by_issn.setdefault(issn(row[f]), []).append(row)
         by_title.setdefault(title_key(row['publication_title']), []).append(row)
 
+    ocn_titles = {}
+    for row in kb:
+        if row['oclc_number']:
+            ocn_titles.setdefault(row['oclc_number'], set()).add(title_key(row['publication_title']))
+    shared_ocn = {o for o, t in ocn_titles.items() if len(t) > 1}
+
     summaries = [json.load(open(f, encoding='utf-8')) for f in sorted(glob.glob(f'{a.meta}/*.json'))
                  if not f.endswith(('.articles.json', '.pdf.json'))]
 
@@ -165,7 +171,9 @@ def main():
             unmatched.append(s)
             report.append([s['slug'], s['journal'], s.get('issn', ''), s.get('print_issn', ''), 'none', '', '', len(rs), sum(r['inferred_year'] for r in rs), sum(not r['date_first'] for r in rs)])
             continue
-        kr = max(cands, key=lambda c: overlap(c, rs))
+        # Prefer a proper entry: a MUSE title_id, and an OCN no other title uses (the export has odd entries,
+        # e.g. title_id 'muse' carrying another journal's OCN), then the best coverage overlap.
+        kr = max(cands, key=lambda c: (c['title_id'] != 'muse', c['oclc_number'] not in shared_ocn, overlap(c, rs)))
         used.setdefault(kr['oclc_entry_id'], []).append(s['slug'])
         report.append([s['slug'], s['journal'], s.get('issn', ''), s.get('print_issn', ''), how,
                        kr['publication_title'], kr['oclc_entry_id'] + (f' (+{len(cands) - 1} more)' if len(cands) > 1 else ''), len(rs),
