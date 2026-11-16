@@ -196,6 +196,9 @@ def main():
 
     write(out / 'muse_pta_kbart.txt', rows)
     write(out / 'pilot_kbart.txt', [x for x in rows if x[0] == a.pilot])
+    # covoverlay changes coverage only; the same rows with ACTION=overlay carry title_url (upload with
+    # "Update changes only" after the covoverlay file).
+    write(out / 'muse_pta_kbart_overlay.txt', [(s, {**r, 'ACTION': 'overlay'}) for s, r in rows])
     with open(out / 'match_report.tsv', 'w', encoding='utf-8', newline='') as fh:
         w = csv.writer(fh, delimiter='\t')
         w.writerow(['slug', 'journal', 'issn', 'print_issn', 'matched_by', 'kbart_title', 'oclc_entry_id', 'coverage_rows', 'rows_year_inferred', 'rows_undated'])
