@@ -65,6 +65,12 @@ Fill in PDF-only articles from each PDF's cover page (`pip install pypdf` first)
 python scripts/build_pages.py --all --pdf --upload --tmp <scratch dir>
 ```
 
+Build the WMS KBART from a Collection Manager export of Muse.MuseAll (UTF-8 tab-delimited). It writes `work/kbart/muse_pta_kbart.txt` (one `covoverlay` row per unbroken run of volumes, `title_url` pointing at the journal's CloudFront page), `pilot_kbart.txt`, `match_report.tsv` and `unmatched_s3.tsv`:
+
+```
+python scripts/build_kbart.py --kbart work/6569_Muse.MuseAll_kbart.txt
+```
+
 Journal pages accept `?volume=24&issue=1`, `?year=2012`, `?article=<muse id>` (jump to and highlight) and `?q=<words>` (filter).
 
 Check job status and restore progress:
