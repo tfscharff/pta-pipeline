@@ -19,6 +19,7 @@ import csv
 import glob
 import json
 import re
+import time
 import unicodedata
 from pathlib import Path
 
@@ -38,27 +39,50 @@ def title_key(s):
 
 
 def vol_num(issue):
-    v = issue.get('volume') or issue['folder'].split('/')[0].lstrip('v').lstrip('0')
-    m = re.match(r'\d+', v or '')
-    # MUSE files unnumbered special issues under volume 10000; they sit inside the run they belong to.
-    return int(m.group()) if m and int(m.group()) < 10000 else None
+    """Volume as an integer: the designation's volume when numeric, else the folder's (v017 for 'XVII-XVIII').
+    MUSE files unnumbered items under volume 0 and special issues under 10000; those are left out of coverage."""
+    for v in (issue.get('volume'), issue['folder'].split('/')[0].lstrip('v')):
+        m = re.match(r'\d+', v or '')
+        if m:
+            return int(m.group()) if 0 < int(m.group()) < 10000 else None
+    return None
 
 
 def vol_end(v, issue):
-    """Last volume an issue covers: 30 for volume 30, 31 for a combined '30/31' or '45 & 46' when
-    the journal numbers issues like volumes (Minnesota Review)."""
+    """Last volume an issue covers: 25 for volume '24-25', 31 for a combined number '30/31' or '45 & 46'
+    when the journal numbers issues like volumes (Minnesota Review)."""
+    end = v
+    vols = [int(n) for n in re.findall(r'\d+', issue.get('volume') or '')]
+    if vols and vols[0] == v and max(vols) - v <= 3:
+        end = max(vols)
+    elif re.fullmatch(r'[IVXLC]+\s*[-/&]\s*[IVXLC]+', (issue.get('volume') or '').strip()):
+        end = v + 1  # 'XVII-XVIII'
     nums = [int(n) for n in re.findall(r'\d+', issue.get('number') or '')]
-    return max(nums) if nums and nums[0] == v and max(nums) - v <= 3 else v
+    if nums and nums[0] == v and max(nums) - v <= 3:
+        end = max(end, max(nums))
+    return end
+
+
+def is_year(n):
+    return 1800 <= n <= int(time.strftime('%Y')) + 1
+
+
+def guess_year(v, off):
+    """Year for an undated issue: the volume itself when it is a year (some issues are filed as v2021),
+    else volume + the journal's offset, if that lands on a plausible year."""
+    if is_year(v):
+        return str(v)
+    return str(v + off) if off is not None and is_year(v + off) else ''
 
 
 def year_offset(keyed):
-    """year - volume when a journal publishes one volume a year (at least 80% of dated issues agree,
-    and at least 3 of them), so undated issues can get a year. None otherwise."""
-    offs = [int(i['year']) - v for v, i in keyed if (i.get('year') or '').isdigit()]
+    """year - volume when a journal publishes about one volume a year (at least 80% of dated issues within
+    a year of the most common offset, and at least 3 of them), so undated issues can get a year."""
+    offs = [int(i['year']) - v for v, i in keyed if (i.get('year') or '').isdigit() and not is_year(v)]
     if len(offs) < 3:
         return None
     best = max(set(offs), key=offs.count)
-    return best if offs.count(best) >= 0.8 * len(offs) else None
+    return best if sum(abs(o - best) <= 1 for o in offs) >= 0.8 * len(offs) else None
 
 
 def runs(summary):
@@ -75,16 +99,20 @@ def runs(summary):
             out.append([(v, i, vol_end(v, i))])
     result = []
     for r in out:
-        years = [i.get('year') or (str(v + off) if off is not None else '') for v, i, _ in r]
+        years = [i.get('year') or guess_year(v, off) for v, i, _ in r]
+        inferred = any(not i.get('year') and y for (_, i, _), y in zip(r, years))
         years = [y for y in years if y]
-        inferred = any(not i.get('year') for _, i, _ in r) and off is not None
         first, last = r[0][1], r[-1][1]
         result.append({
             'date_first': min(years) if years else '', 'vol_first': str(r[0][0]),
             'iss_first': first.get('number') or '',
             'date_last': max(years) if years else '', 'vol_last': str(r[-1][0]),
             'iss_last': last.get('number') or '', 'issues': len(r), 'inferred_year': inferred})
-    return result
+    # Issues filed with a year as their volume (v1978) are extras inside the regular run; drop their rows
+    # when a regular row already spans those years.
+    regular = [x for x in result if not is_year(int(x['vol_first']))]
+    return [x for x in result if not is_year(int(x['vol_first'])) or not any(
+        y['date_first'] <= x['date_first'] and x['date_last'] <= (y['date_last'] or '9999') for y in regular)]
 
 
 def overlap(row, rs):
@@ -169,6 +197,21 @@ def main():
         w.writerow(['slug', 'journal', 'issn', 'print_issn', 'publisher', 'years'])
         for s in unmatched:
             w.writerow([s['slug'], s['journal'], s.get('issn', ''), s.get('print_issn', ''), s.get('publisher', ''), '-'.join(s.get('years') or [])])
+
+    # S3 journals missing from Muse.MuseAll go in a local collection: standard KBART columns plus oclc_number.
+    local_cols = cols[:cols.index('vendor_id')] + ['oclc_number']
+    with open(out / 'local_kbart.txt', 'w', encoding='utf-8', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=local_cols, delimiter='\t', quoting=csv.QUOTE_NONE, escapechar='\\',
+                           lineterminator='\r\n', extrasaction='ignore')
+        w.writeheader()
+        for s in unmatched:
+            for r in runs(s):
+                w.writerow({'publication_title': s['journal'], 'print_identifier': s.get('print_issn', ''),
+                            'online_identifier': s.get('issn', ''), 'date_first_issue_online': r['date_first'],
+                            'num_first_vol_online': r['vol_first'], 'num_first_issue_online': r['iss_first'],
+                            'date_last_issue_online': r['date_last'], 'num_last_vol_online': r['vol_last'],
+                            'num_last_issue_online': r['iss_last'], 'title_url': f"{BASE_URL}/{s['slug']}/index.html",
+                            'coverage_depth': 'fulltext', 'publisher_name': s.get('publisher', '')})
 
     shared = {k: v for k, v in used.items() if len(v) > 1}
     by = lambda m: sum(1 for r in report if r[4] == m)
