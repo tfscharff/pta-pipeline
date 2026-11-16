@@ -40,7 +40,8 @@ def title_key(s):
 def vol_num(issue):
     v = issue.get('volume') or issue['folder'].split('/')[0].lstrip('v').lstrip('0')
     m = re.match(r'\d+', v or '')
-    return int(m.group()) if m else None
+    # MUSE files unnumbered special issues under volume 10000; they sit inside the run they belong to.
+    return int(m.group()) if m and int(m.group()) < 10000 else None
 
 
 def vol_end(v, issue):

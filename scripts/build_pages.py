@@ -39,7 +39,9 @@ BUCKET = 'project.muse'
 # <slug>/<vNNN|preprint>/<issue>/[<id>/]<id>.<ext>  (some journals add a per-article folder)
 ARTICLE_KEY = re.compile(r'^(?P<slug>[^/]+)/(?P<vol>v[^/]+|preprint)/(?P<issue>[^/]+)/(?:(?P<sub>\d+)/)?(?P<id>\d+)\.(?P<ext>pdf|html)$')
 TAG = re.compile(r'<[^>]+>')
-DETAIL_ROW = re.compile(r'<div class="cell label">\s*(.*?)\s*</div>\s*<div class="cell">\s*(.*?)\s*</div>', re.S)
+# Older MUSE pages use <li>/<div> pairs, newer ones (about 2022 on) <div>s and a <th>/<td> details table.
+DETAIL_ROW = re.compile(r'<(div|th) class="cell label"[^>]*>\s*(.*?)\s*</\1>\s*<(?:div|td) class="cell">\s*(.*?)\s*</(?:div|td)>', re.S)
+SLOT = r'<(?:li|div) class="{}"><span[^>]*>(.*?)</span>'
 
 
 def text(fragment):
@@ -67,12 +69,12 @@ def parse_article(path):
         name = text(re.sub(r'<a class="top_bio_wrap_link".*?</a>', '', c, flags=re.S))
         if name:
             authors.append(name)
-    details = {text(k): text(v) for k, v in DETAIL_ROW.findall(s)}
+    details = {text(k): text(v) for _, k, v in DETAIL_ROW.findall(s)}
     return {
-        'journal': text(first(r'<li class="journal"><span>(.*?)</span>', s)),
-        'designation': text(first(r'<li class="designation"><span>(.*?)</span>', s)),
-        'publisher': text(first(r'<li class="publisher"><span>(.*?)</span>', s)),
-        'type': text(first(r'<li class="type"><span class="[^"]*">(.*?)</span>', s)),
+        'journal': text(first(SLOT.format('journal'), s)),
+        'designation': text(first(SLOT.format('designation'), s)),
+        'publisher': text(first(SLOT.format('publisher'), s)),
+        'type': text(first(SLOT.format('type'), s)),
         'title': title or 'Untitled',
         'authors': authors,
         'pages': details.get('Pages', ''),
@@ -179,8 +181,9 @@ def parse_pdf(path, art_id):
     return meta
 
 
-def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400):
-    """Download the given article PDFs in batches, parse each, delete them. Returns ({base: meta}, failures)."""
+def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400, ext='pdf'):
+    """Download the given article PDFs (or HTML with ext='html') in batches, parse each, delete them.
+    Returns ({base: meta}, failures)."""
     import logging
     logging.getLogger('pypdf').setLevel(logging.ERROR)  # font-table warnings are noise
     metas, failures = {}, []
@@ -189,17 +192,17 @@ def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400):
         part = bases[i:i + chunk]
         cmd = ['aws', 's3', 'cp', f's3://{BUCKET}/{slug}/', str(dest), '--recursive', '--only-show-errors', '--exclude', '*']
         for b in part:
-            cmd += ['--include', f'{b}.pdf']
+            cmd += ['--include', f'{b}.{ext}']
         rc = subprocess.run(cmd, capture_output=True, text=True)
         for b in part:
-            p = dest / f'{b}.pdf'
+            p = dest / f'{b}.{ext}'
             if not p.exists():
                 failures.append(b)
                 continue
             try:
-                metas[b] = parse_pdf(p, b.rsplit('/', 1)[-1])
+                metas[b] = parse_pdf(p, b.rsplit('/', 1)[-1]) if ext == 'pdf' else parse_article(p)
             except Exception as e:
-                metas[b] = {'src': 'pdf', 'error': f'{type(e).__name__}: {e}'}
+                metas[b] = {'src': ext, 'error': f'{type(e).__name__}: {e}'}
         shutil.rmtree(dest, ignore_errors=True)
         if rc.returncode:
             log(f'  {slug}: cp rc={rc.returncode} {rc.stderr.strip()[:300]}')
@@ -481,7 +484,10 @@ def main():
     ap.add_argument('--pdf', action='store_true',
                     help='for articles the HTML gave no title (PDF-only), read title etc. from the PDF (needs pypdf)')
     ap.add_argument('--refetch-pdf', action='store_true', help='with --pdf, redo journals that already have a PDF cache')
-    ap.add_argument('--tmp', type=Path, help='temporary download folder for --fetch / --pdf')
+    ap.add_argument('--reparse-html', action='store_true',
+                    help='re-download and re-parse cached articles that have a title but no journal/designation '
+                         '(parsed before the newer MUSE page template was supported)')
+    ap.add_argument('--tmp', type=Path, help='temporary download folder for --fetch / --pdf / --reparse-html')
     ap.add_argument('--upload', action='store_true', help='upload pages to S3 (STANDARD, text/html)')
     ap.add_argument('--listing', default='muse_listing.txt')
     ap.add_argument('--out', default='site', type=Path)
@@ -529,6 +535,17 @@ def main():
             metas = json.loads(cache.read_text(encoding='utf-8'))
         else:
             metas = {}
+        if a.reparse_html:
+            want = [b for b, m in metas.items() if m.get('title') and not m.get('journal') and not m.get('designation')
+                    and not m.get('error') and not m.get('reparsed')]
+            if want:
+                t0 = time.time()
+                got, fails = fetch_parse_pdfs(slug, want, a.tmp, log, ext='html')
+                for b, m in got.items():
+                    metas[b] = {**m, 'reparsed': True} if not m.get('error') else {**metas[b], 'reparsed': True}
+                cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')  # failures retry next run
+                log(f'[{i}/{len(slugs)}] {slug}: re-parsed {len(got)} HTML in {time.time() - t0:.0f}s'
+                    + (f', HTML FETCH FAILED for {len(fails)}, e.g. {fails[0]}' if fails else ''))
         # PDF-derived metadata fills articles the HTML could not (cached in <slug>.pdf.json).
         pdf_cache = a.meta / f'{slug}.pdf.json'
         pdf_metas = json.loads(pdf_cache.read_text(encoding='utf-8')) if pdf_cache.exists() else {}
