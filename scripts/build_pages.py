@@ -42,6 +42,7 @@ TAG = re.compile(r'<[^>]+>')
 # Older MUSE pages use <li>/<div> pairs, newer ones (about 2022 on) <div>s and a <th>/<td> details table.
 DETAIL_ROW = re.compile(r'<(div|th) class="cell label"[^>]*>\s*(.*?)\s*</\1>\s*<(?:div|td) class="cell">\s*(.*?)\s*</(?:div|td)>', re.S)
 SLOT = r'<(?:li|div) class="{}"><span[^>]*>(.*?)</span>'
+META = r'<meta name="{}" content="([^"]*)"'
 
 
 def text(fragment):
@@ -69,6 +70,16 @@ def parse_article(path):
         name = text(re.sub(r'<a class="top_bio_wrap_link".*?</a>', '', c, flags=re.S))
         if name:
             authors.append(name)
+    # Pages without the article-title div (many from before about 2005) still carry the citation_* meta
+    # tags. Their content is entity-escaped markup, so unescape before stripping tags. The page head has
+    # one set ("First Last"); the embedded original article repeats them as "Last, First", so prefer the head.
+    head = s.split('</head>', 1)[0]
+    if not title:
+        title = (text(html.unescape(first(META.format('citation_title'), head) or first(META.format('citation_title'), s)))
+                 or text(html.unescape(first(r'<title>\s*Project MUSE\s*-\s*(.*?)</title>', s))))
+    if not authors:
+        found = re.findall(META.format('citation_author'), head) or re.findall(META.format('citation_author'), s)
+        authors = list(dict.fromkeys(n for n in (text(html.unescape(c)) for c in found) if n))
     details = {text(k): text(v) for _, k, v in DETAIL_ROW.findall(s)}
     return {
         'journal': text(first(SLOT.format('journal'), s)),
@@ -536,13 +547,16 @@ def main():
         else:
             metas = {}
         if a.reparse_html:
-            want = [b for b, m in metas.items() if m.get('title') and not m.get('journal') and not m.get('designation')
-                    and not m.get('error') and not m.get('reparsed')]
+            # Two generations of gaps: no journal/designation (newer template), and "Untitled" (older pages
+            # whose title is only in the citation_* meta tags; marked 'meta' once re-read).
+            want = [b for b, m in metas.items() if not m.get('error') and (
+                (m.get('title') and not m.get('journal') and not m.get('designation') and not m.get('reparsed'))
+                or (m.get('title') == 'Untitled' and m.get('reparsed') != 'meta'))]
             if want:
                 t0 = time.time()
                 got, fails = fetch_parse_pdfs(slug, want, a.tmp, log, ext='html')
                 for b, m in got.items():
-                    metas[b] = {**m, 'reparsed': True} if not m.get('error') else {**metas[b], 'reparsed': True}
+                    metas[b] = {**m, 'reparsed': 'meta'} if not m.get('error') else {**metas[b], 'reparsed': 'meta'}
                 cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')  # failures retry next run
                 log(f'[{i}/{len(slugs)}] {slug}: re-parsed {len(got)} HTML in {time.time() - t0:.0f}s'
                     + (f', HTML FETCH FAILED for {len(fails)}, e.g. {fails[0]}' if fails else ''))
