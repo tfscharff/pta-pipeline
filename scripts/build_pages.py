@@ -298,8 +298,24 @@ status.textContent=terms.length?('Showing '+shown+' of '+total+' '+noun+'.'):(to
 input.addEventListener('input',run);
 var p=new URLSearchParams(location.search);
 if(p.get('q')){input.value=p.get('q');run()}
-var v=p.get('volume'),n=p.get('issue'),y=p.get('year'),a=p.get('article'),target=null;
+var v=p.get('volume')||p.get('quickLinkVolume'),n=p.get('issue')||p.get('quickLinkIssue'),y=p.get('year')||p.get('quickLinkYear'),a=p.get('article'),target=null;
 if(a){target=document.getElementById('a'+a)}
+// Article links from WorldCat Discovery arrive with the article title in Title= (see README, link scheme).
+// One exact match opens that article; several are listed; a near match is highlighted; else say so.
+var T=p.get('Title')||p.get('atitle');
+function key(s){return fold(s).replace(/\\(review\\)\\s*$/,'').replace(/[^a-z0-9]+/g,' ').trim()}
+if(!target&&T){var want=key(T),exact=[],near=null,best=0,words=want.split(' ').filter(function(w){return w.length>2});
+items.forEach(function(li){var link=li.querySelector('a.t');if(!link)return;var t=key(link.textContent);if(!t)return;
+if(t===want){exact.push(li);return}
+var hit=0;words.forEach(function(w){if((' '+t+' ').indexOf(' '+w+' ')>-1)hit++});
+var score=words.length?hit/Math.max(words.length,t.split(' ').filter(function(w){return w.length>2}).length):0;
+if(score>best){best=score;near=li}});
+if(exact.length===1){location.replace(exact[0].querySelector('a.t').href);return}
+if(exact.length>1){var set=exact;items.forEach(function(li){li.hidden=set.indexOf(li)<0});
+[].forEach.call(document.querySelectorAll('[data-group]'),function(g){g.hidden=!g.querySelector('[data-text]:not([hidden])')});
+status.textContent=exact.length+' '+noun+' have the title you followed. Clear the search box to see everything.';input.value=T;v=n=y=null}
+else if(near&&best>=0.8){target=near}
+else{status.textContent='We could not match the article you followed ('+T+'). Browse by volume or search below.';}}
 if(!target&&(v||n||y)){[].some.call(document.querySelectorAll('.issue'),function(s){
 if((!v||s.dataset.volume===v)&&(!n||s.dataset.number===n)&&(!y||s.dataset.year===y)){target=s;return true}})}
 if(target){target.classList.add('hit');var h=target.querySelector('h3')||target;h.setAttribute('tabindex','-1');h.scrollIntoView({block:'start',behavior:'instant'});h.focus({preventScroll:true})}
