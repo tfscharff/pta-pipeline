@@ -43,6 +43,7 @@ TAG = re.compile(r'<[^>]+>')
 DETAIL_ROW = re.compile(r'<(div|th) class="cell label"[^>]*>\s*(.*?)\s*</\1>\s*<(?:div|td) class="cell">\s*(.*?)\s*</(?:div|td)>', re.S)
 SLOT = r'<(?:li|div) class="{}"><span[^>]*>(.*?)</span>'
 META = r'<meta name="{}" content="([^"]*)"'
+NEIGHBOUR = r'<h2>{} Article</h2>\s*</div>\s*<p>(.*?)</p>'
 
 
 def text(fragment):
@@ -56,6 +57,15 @@ def first(pattern, s, flags=re.S):
 
 
 def parse_article(path):
+    # Some ".html" objects (most early-release articles, much of Language) are really the article PDF.
+    with open(path, 'rb') as f:
+        is_pdf = f.read(5) == b'%PDF-'
+    if is_pdf:
+        try:
+            meta = parse_pdf(path, path.stem)
+        except Exception as e:
+            meta = {'src': 'pdf', 'title': '', 'error': f'{type(e).__name__}: {e}'}
+        return {**meta, 'html_is_pdf': True}
     s = path.read_text(encoding='utf-8', errors='replace')
     # The html_title comment markers use non-breaking spaces, so match the title div itself.
     raw_title = first(r'<div id="article-title"[^>]*>(.*?)<!--\W*/html_title', s)
@@ -81,17 +91,77 @@ def parse_article(path):
         found = re.findall(META.format('citation_author'), head) or re.findall(META.format('citation_author'), s)
         authors = list(dict.fromkeys(n for n in (text(html.unescape(c)) for c in found) if n))
     details = {text(k): text(v) for _, k, v in DETAIL_ROW.findall(s)}
+    if not title and '<div class="page404"' in s:  # MUSE's own error page: there is no article behind it
+        return {'title': '', 'authors': [], 'missing': True}
     return {
         'journal': text(first(SLOT.format('journal'), s)),
         'designation': text(first(SLOT.format('designation'), s)),
         'publisher': text(first(SLOT.format('publisher'), s)),
         'type': text(first(SLOT.format('type'), s)),
-        'title': title or 'Untitled',
+        'title': title,
         'authors': authors,
         'pages': details.get('Pages', ''),
         'issn': details.get('ISSN', ''),
         'print_issn': details.get('Print ISSN', ''),
+        'prev': text(first(NEIGHBOUR.format('Previous'), s)),
+        'next': text(first(NEIGHBOUR.format('Next'), s)),
     }
+
+
+def tkey(s):
+    return re.sub(r'[^a-z0-9]+', '', fold(re.sub(r'\s*\(review\)\s*$', '', s or '', flags=re.I)))
+
+
+def by_issue(metas):
+    out = defaultdict(list)
+    for b in metas:
+        out[b.rsplit('/', 1)[0]].append(b)
+    return out
+
+
+def blank(m):
+    return not m.get('title') and not m.get('missing') and not m.get('html_is_pdf') and (m.get('prev') or m.get('next'))
+
+
+def neighbour_anchors(metas):
+    """Titled articles next to an untitled one whose own previous/next titles are not on file yet."""
+    out = []
+    for bases in by_issue(metas).values():
+        wanted = {tkey(metas[b].get(k)) for b in bases if blank(metas[b]) for k in ('prev', 'next')} - {''}
+        out += [b for b in bases if metas[b].get('title') and 'prev' not in metas[b] and metas[b].get('src') != 'pdf'
+                and tkey(metas[b]['title']) in wanted]
+    return out
+
+
+def fill_from_neighbours(metas):
+    """An article page names the previous and next article of its issue, so an untitled article's title
+    can be read from the page before or after it. Fills metas in place and returns the bases it filled."""
+    filled = []
+    for bases in by_issue(metas).values():
+        todo = [b for b in bases if blank(metas[b])]
+        while todo:
+            titles = defaultdict(list)
+            for b in bases:
+                if metas[b].get('title'):
+                    titles[tkey(metas[b]['title'])].append(b)
+            done = []
+            for b in todo:
+                for mine, theirs in (('prev', 'next'), ('next', 'prev')):
+                    hit = titles.get(tkey(metas[b].get(mine)), [])
+                    # the neighbour must be the only article of that title, and name exactly one untitled page
+                    if len(hit) == 1 and metas[hit[0]].get(theirs) and sum(
+                            1 for o in todo if tkey(metas[o].get(mine)) == tkey(metas[b].get(mine))) == 1:
+                        t = metas[hit[0]][theirs]
+                        review = re.search(r'\s*\(review\)\s*$', t, re.I)
+                        metas[b] = {**metas[b], 'title': t[:review.start()] if review else t, 'title_from': 'neighbour',
+                                    **({'type': 'Review'} if review and not metas[b].get('type') else {})}
+                        done.append(b)
+                        break
+            if not done:
+                break
+            filled += done
+            todo = [b for b in todo if b not in done]
+    return filled
 
 
 def num(s, default=10**9):
@@ -167,13 +237,16 @@ def parse_pdf(path, art_id):
     for part in (title, author):  # the cover repeats title then author before the citation
         if part and rest.startswith(part):
             rest = rest[len(part):].strip()
-    m = CITATION.match(rest)
+    m = CITATION.match(rest) if title else None
     if not m:  # title/author not on the cover as given: take the shortest tail that parses as a citation
         for i in range(len(head) - 1, -1, -1):
             m = CITATION.match(' '.join(head[i:]))
             if m:
-                if not title:
-                    title = ' '.join(head[:i])
+                if not title:  # the cover runs title line(s), then one author line, then the citation
+                    lead = head[:i]
+                    if len(lead) > 1 and not author:
+                        author, lead = lead[-1], lead[:-1]
+                    title = ' '.join(lead)
                 break
     body = '\n'.join(lines)
     cover_id = first(r'muse\.jhu\.edu/article/(\d+)', body, 0)
@@ -363,8 +436,12 @@ def build_journal(slug, holdings, metas):
     issues = defaultdict(list)
     preprints = []
     info, pdf_info = {}, {}
+    missing = 0
     for (vol_folder, issue_id, art_id), rec in holdings.items():
         meta = metas.get(rec['base']) or {}
+        if meta.get('missing') and 'pdf' not in rec['exts']:  # an error page and nothing else
+            missing += 1
+            continue
         into = pdf_info if meta.get('src') == 'pdf' else info  # prefer journal details from article HTML
         for k in ('journal', 'publisher', 'issn', 'print_issn'):
             if meta.get(k) and not into.get(k):
@@ -408,10 +485,12 @@ def build_journal(slug, holdings, metas):
     if years:
         span += f", {range_text(years[0], years[-1])}"
     holds = f'The library holds {html.escape(span)}. ' if span else ''
+    gone = (f" {missing} article{' is' if missing == 1 else 's are'} not listed because Project MUSE supplied"
+            ' an error page in place of the article.') if missing else ''
 
     out = [f'<header>\n<h1>{html.escape(journal)}</h1>',
            f'<p class="about">{" ".join(about)}</p>' if about else '',
-           f'<p class="about">{holds}Each article title opens the PDF.</p>\n</header>',
+           f'<p class="about">{holds}Each article title opens the PDF.{gone}</p>\n</header>',
            '<div class="find" role="search">',
            '<label for="q">Find an article by title or author</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
@@ -453,7 +532,7 @@ def build_journal(slug, holdings, metas):
                            'no_designation': sum(1 for g in groups if not g['designation']),
                            'parse_errors': sum(1 for a in all_arts if a[2].get('error')),
                            'from_pdf': sum(1 for a in all_arts if a[2].get('src') == 'pdf' and a[2].get('title')),
-                           'preprints': len(preprints)}}
+                           'preprints': len(preprints), 'missing': missing}}
     return doc, summary
 
 
@@ -469,11 +548,12 @@ def article_li(art_id, exts, m, base):
         bits.append(f"Pages {html.escape(m['pages'].replace('-', '–'))}.")
     if 'pdf' in exts:
         head = f'<a class="t" href="{base}.pdf">{html.escape(title)}</a>'
-        if 'html' in exts:
+        if 'html' in exts and not m.get('missing'):
             bits.append(f'<a href="{base}.html">Web version</a>')
     else:
         head = f'<a class="t" href="{base}.html">{html.escape(title)}</a>'
-        bits.append('Web version only.')
+        if not m.get('html_is_pdf'):
+            bits.append('Web version only.')
     search = fold(' '.join([title, authors]))
     return f'<li class="art" id="a{art_id}" data-text="{html.escape(search)}">{head}<p>{" ".join(bits)}</p></li>'
 
@@ -563,16 +643,18 @@ def main():
         else:
             metas = {}
         if a.reparse_html:
-            # Two generations of gaps: no journal/designation (newer template), and "Untitled" (older pages
-            # whose title is only in the citation_* meta tags; marked 'meta' once re-read).
+            # Gaps from earlier parsers: no journal/designation (newer template), and the old 'Untitled'
+            # placeholder (title only in the citation_* meta tags, a PDF saved as .html, or a MUSE error
+            # page). Entries are marked 'meta2' once re-read, so a title of 'Untitled' left after that is real.
             want = [b for b, m in metas.items() if not m.get('error') and (
                 (m.get('title') and not m.get('journal') and not m.get('designation') and not m.get('reparsed'))
-                or (m.get('title') == 'Untitled' and m.get('reparsed') != 'meta'))]
+                or (m.get('title') == 'Untitled' and m.get('reparsed') != 'meta2'))]
             if want:
                 t0 = time.time()
                 got, fails = fetch_parse_pdfs(slug, want, a.tmp, log, ext='html')
                 for b, m in got.items():
-                    metas[b] = {**m, 'reparsed': 'meta'} if not m.get('error') else {**metas[b], 'reparsed': 'meta'}
+                    # keep the old entry only when the page itself could not be parsed
+                    metas[b] = {**(metas[b] if m.get('src') == 'html' else m), 'reparsed': 'meta2'}
                 cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')  # failures retry next run
                 log(f'[{i}/{len(slugs)}] {slug}: re-parsed {len(got)} HTML in {time.time() - t0:.0f}s'
                     + (f', HTML FETCH FAILED for {len(fails)}, e.g. {fails[0]}' if fails else ''))
@@ -590,9 +672,35 @@ def main():
                 else:
                     pdf_cache.write_text(json.dumps(pdf_metas, ensure_ascii=False), encoding='utf-8')
                 log(f'[{i}/{len(slugs)}] {slug}: parsed {len(pdf_metas)} PDFs in {time.time() - t0:.0f}s')
+        if a.reparse_html:
+            # Articles whose HTML has no title (mostly reviews) but which have a PDF: read the PDF cover.
+            want = [rec['base'] for rec in holdings[slug].values() if 'pdf' in rec['exts']
+                    and rec['base'] in metas and not metas[rec['base']].get('title') and rec['base'] not in pdf_metas]
+            if want:
+                t0 = time.time()
+                got, fails = fetch_parse_pdfs(slug, want, a.tmp, log)
+                pdf_metas.update(got)
+                pdf_cache.write_text(json.dumps(pdf_metas, ensure_ascii=False), encoding='utf-8')
+                log(f'[{i}/{len(slugs)}] {slug}: parsed {len(got)} PDFs for untitled HTML in {time.time() - t0:.0f}s'
+                    + (f', PDF FETCH FAILED for {len(fails)}, e.g. {fails[0]}' if fails else ''))
+        html_metas = dict(metas)
         for b, pm in pdf_metas.items():
-            if not (metas.get(b) or {}).get('title'):
-                metas[b] = pm
+            m = metas.get(b) or {}
+            if not m.get('title'):  # keep whatever the HTML did give (designation, pages, type)
+                metas[b] = {**pm, **{k: v for k, v in m.items() if v}}
+        if a.reparse_html:
+            want = [b for b in neighbour_anchors(metas) if b in html_metas]
+            if want:
+                got, fails = fetch_parse_pdfs(slug, want, a.tmp, log, ext='html')
+                for b, m in got.items():
+                    extra = {'prev': m.get('prev', ''), 'next': m.get('next', '')}
+                    metas[b], html_metas[b] = {**metas[b], **extra}, {**html_metas[b], **extra}
+            filled = fill_from_neighbours(metas)
+            for b in filled:
+                html_metas[b] = {**html_metas[b], **{k: metas[b][k] for k in ('title', 'title_from', 'type') if k in metas[b]}}
+            if want or filled:
+                cache.write_text(json.dumps(html_metas, ensure_ascii=False), encoding='utf-8')
+                log(f'[{i}/{len(slugs)}] {slug}: read {len(want)} neighbouring pages, titled {len(filled)} from them')
         doc, summary = build_journal(slug, holdings[slug], metas)
         (a.out / slug).mkdir(parents=True, exist_ok=True)
         page_path = a.out / slug / 'index.html'
