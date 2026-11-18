@@ -1,0 +1,23 @@
+{
+  "bucket": "my-journal-archive",
+  "ops_bucket": "my-journal-archive-ops",
+  "batch_role": "pta-batchops",
+  "base_url": "https://dxxxxxxxxxxxxx.cloudfront.net",
+  "listing": "listing.txt",
+  "profile": "profiles/citation_meta.py",
+  "site": {
+    "archive_name": "Journal archive",
+    "index_title": "Journal archive | Example Library",
+    "journal_title_suffix": "Example Library journal archive",
+    "index_intro": "Back issues of {count} held by the library. Choose a journal to see its volumes and articles.",
+    "all_journals": "All archived journals",
+    "provider": "the publisher",
+    "footer": "Example Library, Example College. These are the library's archived copies of licensed journal issues, for current students, faculty and staff."
+  },
+  "kbart": {
+    "link_scheme": "",
+    "title_id_template": "",
+    "avoid_title_ids": [],
+    "pilot": ""
+  }
+}

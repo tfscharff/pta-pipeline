@@ -1,4 +1,4 @@
-"""Build S3 Batch Operations CSV manifests from muse_listing.txt.
+"""Build S3 Batch Operations CSV manifests from the bucket listing.
 
 Listing format (tab-separated): Key, StorageClass, Size
 Manifest format: bucket,url-encoded-key  (no header, as Batch Operations requires)
@@ -12,17 +12,23 @@ import os
 import sys
 from urllib.parse import quote
 
+from common import load_config, need
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--listing", default="muse_listing.txt")
-    ap.add_argument("--bucket", default="project.muse")
+    ap.add_argument("--config", help="configuration file (default: config.json in the repository root)")
+    ap.add_argument("--listing", help="bucket listing (default: \"listing\" in the config)")
+    ap.add_argument("--bucket", help="content bucket (default: \"bucket\" in the config)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--storage-class", help="only include objects in this storage class")
     ap.add_argument("--ext", action="append", help="only include keys with this extension (repeatable)")
     ap.add_argument("--exclude-ext", action="append", help="exclude keys with this extension (repeatable)")
     ap.add_argument("--prefix", help="only include keys starting with this prefix")
     args = ap.parse_args()
+    cfg = load_config(args.config)
+    args.listing = args.listing or cfg["listing"]
+    args.bucket = args.bucket or need(cfg, "bucket")
 
     exts = {e.lower().lstrip(".") for e in args.ext or []}
     excl = {e.lower().lstrip(".") for e in args.exclude_ext or []}

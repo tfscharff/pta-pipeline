@@ -4,14 +4,14 @@
     "Priority": 0,
     "Statement": {
       "IPSetReferenceStatement": {
-        "ARN": "arn:aws:wafv2:us-east-1:ACCOUNT_ID:global/ipset/muse-pta-allow/2fe86ca7-645b-4e98-a118-b63d3e9710bf"
+        "ARN": "IP_SET_ARN"
       }
     },
     "Action": { "Allow": {} },
     "VisibilityConfig": {
       "SampledRequestsEnabled": true,
       "CloudWatchMetricsEnabled": true,
-      "MetricName": "muse-pta-allowed"
+      "MetricName": "pta-allowed"
     }
   }
 ]

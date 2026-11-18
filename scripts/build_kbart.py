@@ -1,18 +1,21 @@
-"""Build the WMS KBART for Muse.MuseAll from the journal summaries of what is actually in S3.
+"""Build the WMS KBART for a knowledge base collection from the journal summaries of what is in S3.
 
-Joins the WMS export of Muse.MuseAll (keeps its exact columns and oclc_entry_id) to the per-journal
-summaries written by build_pages.py (work/meta/<slug>.json) by ISSN, falling back to normalized title.
-For every matched title it writes one row per unbroken run of volumes (a gap in volume numbers starts
-a new row), with title_url pointing at the journal's CloudFront index page and ACTION=covoverlay.
+Joins a Collection Manager export of the collection (keeps its exact columns and oclc_entry_id) to the
+per-journal summaries written by build_pages.py (work/meta/<slug>.json) by ISSN, falling back to
+normalized title. For every matched title it writes one row per unbroken run of volumes (a gap in volume
+numbers starts a new row), with title_url pointing at the journal's index page under "base_url".
 
 Outputs (in --out):
-  muse_pta_kbart.txt     rows for every matched title (UTF-8, tab-delimited, WMS column order)
-  pilot_kbart.txt        the same rows for --pilot only, to test an upload first
-  unmatched_s3.tsv       S3 journals with no Muse.MuseAll row (need a local collection)
+  kbart_coverage.txt     ACTION=covoverlay rows for every matched title (UTF-8, tab-delimited, WMS columns)
+  kbart_overlay.txt      the same rows with ACTION=overlay, which is what sets title_url and, when
+                         "kbart.link_scheme" is configured, the title-level link scheme and title_id
+  pilot_kbart.txt        the coverage rows for the pilot journal only, to test an upload first
+  unmatched_s3.tsv       S3 journals with no row in the export (they need a local collection)
+  local_kbart.txt        a KBART for those, ready for a local collection
   match_report.tsv       every S3 journal with how it matched and its coverage runs
 
 Usage:
-  python scripts/build_kbart.py --kbart work/6569_Muse.MuseAll_kbart.txt
+  python scripts/build_kbart.py --kbart work/<collection export>.txt
 """
 import argparse
 import csv
@@ -23,14 +26,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-BASE_URL = 'https://d2cfus91tk2xx.cloudfront.net'
-# Article-level linking. The collection's own link scheme (muse) sends article links to a muse.jhu.edu
-# search, and WMS rejects a blank or unlisted scheme. OCLC's linker builds this listed scheme's article URL as
-#   https://<title_id>/action/doSearch?SeriesKey=ajph&Title=<article title>
-# (and .../action/quickLink?...quickLinkYear=&quickLinkVolume=&quickLinkIssue= when it has no title), so a
-# title_id of "<host>/<slug>/index.html?x=" lands on our journal page with the title in the query string.
-# The page script (build_pages.py) reads Title and opens the matching article.
-LINK_SCHEME = 'aphapublications.org'
+from common import load_config, need
 
 
 def issn(s):
@@ -47,7 +43,7 @@ def title_key(s):
 
 def vol_num(issue):
     """Volume as an integer: the designation's volume when numeric, else the folder's (v017 for 'XVII-XVIII').
-    MUSE files unnumbered items under volume 0 and special issues under 10000; those are left out of coverage."""
+    Volume 0 and placeholder volumes of 10000 and up (unnumbered items, special issues) are left out of coverage."""
     for v in (issue.get('volume'), issue['folder'].split('/')[0].lstrip('v')):
         m = re.match(r'\d+', v or '')
         if m:
@@ -57,7 +53,7 @@ def vol_num(issue):
 
 def vol_end(v, issue):
     """Last volume an issue covers: 25 for volume '24-25', 31 for a combined number '30/31' or '45 & 46'
-    when the journal numbers issues like volumes (Minnesota Review)."""
+    when the journal numbers issues like volumes."""
     end = v
     vols = [int(n) for n in re.findall(r'\d+', issue.get('volume') or '')]
     if vols and vols[0] == v and max(vols) - v <= 3:
@@ -135,11 +131,16 @@ def overlap(row, rs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--kbart', required=True, help='WMS export of Muse.MuseAll (UTF-8 tab-delimited)')
+    ap.add_argument('--kbart', required=True, help='Collection Manager export of the collection (UTF-8 tab-delimited)')
+    ap.add_argument('--config', help='configuration file (default: config.json in the repository root)')
     ap.add_argument('--meta', default='work/meta')
     ap.add_argument('--out', default='work/kbart')
-    ap.add_argument('--pilot', default='ab_autobiography_studies')
+    ap.add_argument('--pilot', help='journal folder for pilot_kbart.txt (default: "kbart.pilot" in the config)')
     a = ap.parse_args()
+    cfg = load_config(a.config)
+    base_url, kcfg = need(cfg, 'base_url'), cfg['kbart']
+    pilot = a.pilot or kcfg['pilot']
+    avoid = set(kcfg['avoid_title_ids'])
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -178,9 +179,9 @@ def main():
             unmatched.append(s)
             report.append([s['slug'], s['journal'], s.get('issn', ''), s.get('print_issn', ''), 'none', '', '', len(rs), sum(r['inferred_year'] for r in rs), sum(not r['date_first'] for r in rs)])
             continue
-        # Prefer a proper entry: a MUSE title_id, and an OCN no other title uses (the export has odd entries,
-        # e.g. title_id 'muse' carrying another journal's OCN), then the best coverage overlap.
-        kr = max(cands, key=lambda c: (c['title_id'] != 'muse', c['oclc_number'] not in shared_ocn, overlap(c, rs)))
+        # Prefer a proper entry: a title_id not listed in "kbart.avoid_title_ids", and an OCN no other title
+        # uses (exports can hold odd entries that carry another journal's OCN), then the best coverage overlap.
+        kr = max(cands, key=lambda c: (c['title_id'] not in avoid, c['oclc_number'] not in shared_ocn, overlap(c, rs)))
         used.setdefault(kr['oclc_entry_id'], []).append(s['slug'])
         report.append([s['slug'], s['journal'], s.get('issn', ''), s.get('print_issn', ''), how,
                        kr['publication_title'], kr['oclc_entry_id'] + (f' (+{len(cands) - 1} more)' if len(cands) > 1 else ''), len(rs),
@@ -190,7 +191,7 @@ def main():
             new.update({'date_first_issue_online': r['date_first'], 'num_first_vol_online': r['vol_first'],
                         'num_first_issue_online': r['iss_first'], 'date_last_issue_online': r['date_last'],
                         'num_last_vol_online': r['vol_last'], 'num_last_issue_online': r['iss_last'],
-                        'title_url': f"{BASE_URL}/{s['slug']}/index.html", 'coverage_depth': 'fulltext',
+                        'title_url': f"{base_url}/{s['slug']}/index.html", 'coverage_depth': 'fulltext',
                         'ACTION': 'covoverlay'})
             rows.append((s['slug'], new))
 
@@ -201,13 +202,15 @@ def main():
             w.writeheader()
             w.writerows(r for _, r in items)
 
-    write(out / 'muse_pta_kbart.txt', rows)
-    write(out / 'pilot_kbart.txt', [x for x in rows if x[0] == a.pilot])
-    # covoverlay changes coverage only; the same rows with ACTION=overlay carry title_url, the title-level
-    # link scheme and the title_id it needs (upload with "Update changes only" after the covoverlay file).
-    write(out / 'muse_pta_kbart_overlay.txt',
-          [(s, {**r, 'ACTION': 'overlay', 'oclc_linkscheme': LINK_SCHEME,
-                'title_id': f"{BASE_URL.split('://', 1)[1]}/{s}/index.html?x="}) for s, r in rows])
+    write(out / 'kbart_coverage.txt', rows)
+    write(out / 'pilot_kbart.txt', [x for x in rows if x[0] == pilot])
+    # covoverlay changes coverage only; the same rows with ACTION=overlay carry title_url and, when a link
+    # scheme is configured, the title-level link scheme and the title_id it needs (see README, link scheme).
+    # Upload with "Update changes only" after the covoverlay file.
+    host = base_url.split('://', 1)[1]
+    linking = lambda slug: {'oclc_linkscheme': kcfg['link_scheme'],
+                            'title_id': kcfg['title_id_template'].format(host=host, slug=slug)} if kcfg['link_scheme'] else {}
+    write(out / 'kbart_overlay.txt', [(s, {**r, 'ACTION': 'overlay', **linking(s)}) for s, r in rows])
     with open(out / 'match_report.tsv', 'w', encoding='utf-8', newline='') as fh:
         w = csv.writer(fh, delimiter='\t')
         w.writerow(['slug', 'journal', 'issn', 'print_issn', 'matched_by', 'kbart_title', 'oclc_entry_id', 'coverage_rows', 'rows_year_inferred', 'rows_undated'])
@@ -218,7 +221,7 @@ def main():
         for s in unmatched:
             w.writerow([s['slug'], s['journal'], s.get('issn', ''), s.get('print_issn', ''), s.get('publisher', ''), '-'.join(s.get('years') or [])])
 
-    # S3 journals missing from Muse.MuseAll go in a local collection: standard KBART columns plus oclc_number.
+    # S3 journals missing from the collection go in a local collection: standard KBART columns plus oclc_number.
     local_cols = cols[:cols.index('vendor_id')] + ['oclc_number']
     with open(out / 'local_kbart.txt', 'w', encoding='utf-8', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=local_cols, delimiter='\t', quoting=csv.QUOTE_NONE, escapechar='\\',
@@ -230,7 +233,7 @@ def main():
                             'online_identifier': s.get('issn', ''), 'date_first_issue_online': r['date_first'],
                             'num_first_vol_online': r['vol_first'], 'num_first_issue_online': r['iss_first'],
                             'date_last_issue_online': r['date_last'], 'num_last_vol_online': r['vol_last'],
-                            'num_last_issue_online': r['iss_last'], 'title_url': f"{BASE_URL}/{s['slug']}/index.html",
+                            'num_last_issue_online': r['iss_last'], 'title_url': f"{base_url}/{s['slug']}/index.html",
                             'coverage_depth': 'fulltext', 'publisher_name': s.get('publisher', '')})
 
     shared = {k: v for k, v in used.items() if len(v) > 1}

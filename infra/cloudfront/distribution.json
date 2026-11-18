@@ -1,25 +1,25 @@
 {
-  "CallerReference": "muse-pta-2026-11-11",
-  "Comment": "MUSE PTA (Wallace Library) - DO NOT DELETE: hostname is in WMS KBART and EZproxy",
+  "CallerReference": "pta-CHANGE-ME",
+  "Comment": "Journal archive - DO NOT DELETE: hostname is in the WMS KBART and EZproxy",
   "Enabled": true,
   "DefaultRootObject": "index.html",
   "PriceClass": "PriceClass_100",
   "HttpVersion": "http2and3",
   "IsIPV6Enabled": false,
-  "WebACLId": "arn:aws:wafv2:us-east-1:ACCOUNT_ID:global/webacl/muse-pta-acl/1f592591-b490-4481-aad4-4ac98817a3eb",
+  "WebACLId": "WEB_ACL_ARN",
   "Origins": {
     "Quantity": 1,
     "Items": [
       {
-        "Id": "project-muse-s3",
-        "DomainName": "project.muse.s3.us-east-1.amazonaws.com",
-        "OriginAccessControlId": "ETMS8EHK4MXVR",
+        "Id": "content-s3",
+        "DomainName": "BUCKET.s3.REGION.amazonaws.com",
+        "OriginAccessControlId": "OAC_ID",
         "S3OriginConfig": { "OriginAccessIdentity": "" }
       }
     ]
   },
   "DefaultCacheBehavior": {
-    "TargetOriginId": "project-muse-s3",
+    "TargetOriginId": "content-s3",
     "ViewerProtocolPolicy": "redirect-to-https",
     "AllowedMethods": {
       "Quantity": 2,

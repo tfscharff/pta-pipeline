@@ -1,13 +1,14 @@
-# Large/generated data (regenerate from S3)
-muse_listing.txt
+# Deployment-specific settings and notes (never committed)
+config.json
+local/
+CLAUDE.local.md
+# Large or generated data (regenerate from S3)
+listing.txt
+*_listing.txt
 manifests/
 work/
 logs/
 *.log
-# Source data supplied by vendor
-kbart/raw/
+site/
 __pycache__/
 .venv/
-# Generated journal pages (about 200 MB; the copies in s3://project.muse are canonical). Keep the index and the pilot.
-site/*/
-!site/ab_autobiography_studies/

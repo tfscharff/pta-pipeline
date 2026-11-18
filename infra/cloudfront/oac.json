@@ -1,6 +1,6 @@
 {
-  "Name": "muse-pta-oac",
-  "Description": "CloudFront access to project.muse",
+  "Name": "pta-oac",
+  "Description": "CloudFront access to the content bucket",
   "SigningProtocol": "sigv4",
   "SigningBehavior": "always",
   "OriginAccessControlOriginType": "s3"

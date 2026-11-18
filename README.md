@@ -1,96 +1,192 @@
 # pta-pipeline
 
-Tooling for self-hosting Wheaton College's Project MUSE post-termination access (PTA) journal content from S3 behind CloudFront, AWS WAF and EZproxy, and loading it into OCLC WMS as a local collection. The full brief and architecture are in [CLAUDE.md](CLAUDE.md).
+Tooling for a library to host its own **post-termination access (PTA)** journal content, meaning the back issues it keeps rights to after a subscription ends, and to make that content work in OCLC WorldShare Management Services (WMS) and WorldCat Discovery.
 
-## Status
+The content sits in a private S3 bucket and is served through CloudFront, AWS WAF and EZproxy. Instead of building a new collection, the pipeline points an existing collection in the WorldCat knowledge base at the hosted copies: it sets coverage to what the bucket actually holds and sends each title's links to a generated journal page. It works for any knowledge base collection whose files you hold.
 
-| Step | State |
+## How it fits together
+
+```
+private S3 bucket  ->  CloudFront (Origin Access Control)  ->  AWS WAF allow list  ->  users
+                                                               campus network, VPN, EZproxy
+```
+
+- **Nothing is public.** The bucket keeps Block Public Access on. CloudFront is the only reader, and WAF blocks every address that is not on the allow list. Off-campus users come through EZproxy.
+- **One page per journal.** Each journal folder gets a generated `index.html` listing its volumes, issues and articles, plus a top-level index of all journals. The pages are static, have no external assets, and follow the reader's light or dark setting.
+- **The knowledge base collection links to those pages.** A KBART file sets each title's coverage and URL. An optional link scheme setting makes article links from Discovery open the article itself.
+
+## What you need
+
+- AWS CLI with credentials for the account that owns the bucket
+- Python 3.9 or later (`pip install pypdf` only if you use `--pdf`)
+- PowerShell 7 for the two Batch Operations scripts
+- The content in S3, laid out as `journal/v<volume>/<issue>/<article id>.pdf` and `.html` (see [Parsing profiles](#parsing-profiles) for other layouts)
+- A Collection Manager export of the knowledge base collection (UTF-8, tab-delimited)
+- Your campus network ranges and the outbound address of your EZproxy server
+
+## Configure
+
+Copy `config.example.json` to `config.json` and fill it in. `config.json` is git-ignored, so deployment details stay out of the repository.
+
+| Key | Meaning |
 |---|---|
-| 1. Listing analysis | Done: [analysis/01_listing_analysis.md](analysis/01_listing_analysis.md) |
-| 2. Restore from DEEP_ARCHIVE | **Pilot** (`ab_autobiography_studies/`, 364 objects) restored 2026-11-13. **Full job** `6b10cdae…` started 2026-11-13 (Bulk, 7 days). The 364 pilot tasks fail because those objects are already GLACIER_IR. |
-| 3. Convert to GLACIER_IR | **Pilot** converted by Batch job `dc5b04f5…` (364/364 succeeded, all verified GLACIER_IR). **Full** copy job `91f2bccc-a627-4f59-a28b-beed900ef6f8` completed 2026-11-14: 2,807,089 succeeded and 7 failed, because those 7 restores hadn't finished yet. Retry job `948b2a65…` (`manifests/copy_retry1.csv`) converted all 7 on 2026-11-15. **Verified 2026-11-15:** a fresh listing shows all 2,807,460 objects in GLACIER_IR, plus the STANDARD `index.html` pages. |
-| 4. Lifecycle | Nothing to do. The bucket policy denies `PutLifecycleConfiguration`, so nothing can transition objects back to Glacier. Old DEEP_ARCHIVE versions are kept as a backup (about $0.75/month). They were written 2026-09-21 to 2026-09-24 and DEEP_ARCHIVE bills a 180-day minimum, so deleting them before about 2027-03-23 saves nothing: the remaining days are charged as an early-deletion fee. Delete them after that date. |
-| 5. Index pages | **All 727 journal pages** and the top-level index were built by `scripts/build_pages.py` and uploaded 2026-11-15 (STANDARD, `max-age=300`). **PDF pass** (`--pdf`, 2026-11-16) read the MUSE cover page of 137,954 PDF-only articles and re-uploaded every page. 373 of those PDFs are filed by MUSE under a second article ID (the same file is listed under its own ID), and 9 are empty, corrupt or have unreadable metadata. **HTML re-parse** (`--reparse-html`, 2026-11-16) re-read 55,451 articles in MUSE's newer page template (about 2022 on), which the parser had missed: issues lacking a volume/issue/date designation fell from 3,154 to 135. **Untitled clean-up** (2026-11-16): the first parser stored the placeholder "Untitled" for 56,883 HTML articles and did not count them. Re-reading them recovered almost all: older pages (roughly pre-2005) carry the title only in `citation_*` meta tags; 4,395 `.html` objects are really the article PDF (most early-release articles and much of Language; listed in `manifests/pdf_as_html.csv`; Batch job `952472ac…` re-copied them in place with `Content-Type: application/pdf` on 2026-11-17, 4,395 succeeded, sample verified, and one opened as a PDF through EZproxy); reviews with no title on their own page take it from the PDF cover or from the previous/next article named on neighbouring pages (323 titles). 1,680 articles are MUSE error pages with nothing behind them (968 in Missouri Review); they are left off the pages, with a count in the page header, and no volume's coverage depended on them. **Now 671,809 articles are listed and 648 have no title** (406 of them PDFs with the problems above). Only the top index and the pilot page are kept in git; S3 holds the rest. |
-| 6. Infrastructure | WAF, OAC, CloudFront and bucket policy are live. On-campus access loads the placeholder (verified 2026-11-12). Off-campus access returns 403 from WAF. |
-| 7. EZproxy / KBART / WMS / tests | EZproxy stanza is in OCLC's hosted config. Off-campus access through EZproxy works, and direct off-campus access returns 403 (both verified 2026-11-16). **KBART built 2026-11-16** from the WMS export of Muse.MuseAll (865 titles, 1,134 entries): 726 of 727 S3 journals matched by ISSN, 804 `covoverlay` rows (49 titles split at gaps), every row dated (35 rows with years inferred from a one-volume-a-year pattern). Leaving every other entry out of the file deselects it, so Discovery offers only what we host. Newman Studies Journal is not in Muse.MuseAll; OCLC was asked to add it (email sent 2026-11-17), with a local collection (`local_kbart.txt`) as the fallback. **Uploaded 2026-11-16** with "Replace all titles" (408 titles deselected, 710 updated). A second pass fixed JGSS and Restoration, which had been matched to entries carrying another title's OCN (OCLC was told about the 18 shared OCNs). `covoverlay` changes coverage only, so `muse_pta_kbart_overlay.txt` (the same rows with `ACTION=overlay`) was uploaded with "Update changes only" to set `title_url` (726 titles updated). Split coverage survived the overlay pass: Language shows 8 rows and Minnesota Review 7 (verified 2026-11-16). The collection's Local Collection URL Formula was set to `[[localstem]]https://d2cfus91tk2xx.cloudfront.net/index.html` (2026-11-16); **Article links (2026-11-16):** article results in Discovery go through `linker2.worldcat.org`, and the collection's `muse` link scheme sent them to a muse.jhu.edu title search. WMS won't take a blank or unlisted link scheme, and a collection-level Local Link Scheme is ignored by the resolver, so the override is set per title by overlay KBART. All 650 values in OCLC's link scheme spreadsheet were tested against the linker with a real article link. A few build the URL from the title's `title_id` (the linker's `jKey`). With `oclc_linkscheme=aphapublications.org` and `title_id=d2cfus91tk2xx.cloudfront.net/<slug>/index.html?x=`, the linker redirects to `https://d2cfus91tk2xx.cloudfront.net/<slug>/index.html?x=/action/doSearch?SeriesKey=ajph&Title=<article title>`, and to `...?x=/action/quickLink?...&quickLinkYear=&quickLinkVolume=&quickLinkIssue=` when it has no article title. The journal page reads those parameters: one exact title match opens the article, several are listed, a near match is highlighted, and an issue-only link jumps to the issue. Uploaded for all 726 titles (preview: 0 invalid); the resolver picks up title-level changes within about five minutes. Verified in Discovery 2026-11-16: an article result in Journal of Early Christian Studies opened its PDF. The link depends on OCLC keeping that scheme's URL pattern; if it changes, links still land on the journal page. `atoz` is the fallback scheme: it always redirects to the plain `title_url`. |
+| `bucket` | S3 bucket that holds the content |
+| `ops_bucket` | Private bucket for Batch Operations manifests and reports |
+| `batch_role` | IAM role that S3 Batch Operations assumes (`infra/batchops/`) |
+| `base_url` | The CloudFront address, `https://<distribution>.cloudfront.net` |
+| `listing` | Path of the bucket listing file |
+| `profile` | Parsing profile that reads article metadata (default `profiles/citation_meta.py`) |
+| `site.*` | Wording on the generated pages: headings, page titles, the footer, and the provider's name |
+| `kbart.link_scheme`, `kbart.title_id_template` | Optional article linking (see [Link scheme](#link-scheme)) |
+| `kbart.avoid_title_ids` | `title_id` values that mark odd entries in the export to avoid when a title has several |
+| `kbart.pilot` | Journal folder written to `pilot_kbart.txt` for a first test upload |
 
-## Access
+## Steps
 
-- **CloudFront hostname:** `https://d2cfus91tk2xx.cloudfront.net/` (distribution `EWK48TT92QAN`). **Never delete or recreate it**, because the hostname is baked into the KBART and the EZproxy stanza.
-- **WAF allow list** (`muse-pta-allow`): `CAMPUS_CIDR` (campus), `VPN_IP/32` (VPN), `EZPROXY_IP/32` (hosted EZproxy `wheatonma.idm.oclc.org`). Everything else is blocked. The addresses and the AWS account number are kept out of this repo: read the live allow list with `aws wafv2 get-ip-set --scope CLOUDFRONT --region us-east-1 --name muse-pta-allow --id 2fe86ca7-645b-4e98-a118-b63d3e9710bf --query IPSet.Addresses`, and substitute `ACCOUNT_ID` in `infra/` JSON with the output of `aws sts get-caller-identity --query Account --output text` before using a file. IPv6 is disabled on the distribution because the allow list is IPv4 only.
-- **EZproxy stanza:**
-  ```
-  Title Project MUSE Post-Termination Access (Wallace Library)
-  URL https://d2cfus91tk2xx.cloudfront.net/
-  Host d2cfus91tk2xx.cloudfront.net
-  ```
+Prove the whole chain with one journal before running anything on the full bucket.
 
-## Usage
-
-Regenerate the listing (git ignores it because it's about 200 MB):
+### 1. List the bucket
 
 ```
-aws s3api list-objects-v2 --bucket project.muse --query "Contents[].[Key,StorageClass,Size]" --output text > muse_listing.txt
+aws s3api list-objects-v2 --bucket <bucket> --query "Contents[].[Key,StorageClass,Size]" --output text > listing.txt
 ```
 
-Build a Batch Operations manifest (`bucket,url-encoded-key`):
+The listing is the input to everything else. For a large bucket it runs to hundreds of megabytes, so the scripts stream it.
+
+### 2. Restore archived objects
+
+Skip this if nothing is in `GLACIER` or `DEEP_ARCHIVE`. Otherwise build a manifest, upload it to the ops bucket and create the restore job. The job waits in Suspended until you confirm it.
 
 ```
 python scripts/make_manifest.py --out manifests/restore_all.csv --storage-class DEEP_ARCHIVE
-```
-
-Create the restore job. It waits in Suspended until confirmed:
-
-```
+aws s3 cp manifests/restore_all.csv s3://<ops bucket>/manifests/restore_all.csv
 ./infra/batchops/create-restore-job.ps1
+python scripts/check_restore.py --sample 200
 ```
 
-After the restore completes, create the in-place GLACIER_IR copy job. It also waits in Suspended until confirmed, and it copies metadata (Content-Type) unchanged unless `-ContentType` is given:
+### 3. Copy to an instant-retrieval class
+
+`GLACIER_IR` suits content that is read rarely but must open immediately. The copy is in place, keeps each object's metadata, and also waits in Suspended.
 
 ```
 ./infra/batchops/create-copy-job.ps1 -ManifestKey manifests/restore_all.csv
 ```
 
-Build journal pages from the article HTML (the issue folder is MUSE's internal ID, so volume, issue, year, title, authors and pages come from each article's HTML), then upload them:
+Pass `-ContentType application/pdf` with a narrower manifest to correct objects stored with the wrong type, for example PDFs saved under `.html` names.
+
+### 4. Build the journal pages
 
 ```
-aws s3 sync s3://project.muse/<slug>/ work/<slug>/ --exclude "*" --include "*.html"
-python scripts/build_pages.py --slug <slug>
-aws s3 cp site/<slug>/index.html s3://project.muse/<slug>/index.html --content-type "text/html; charset=utf-8" --cache-control "max-age=300"
-```
-
-Fill in PDF-only articles from each PDF's cover page (`pip install pypdf` first). Results are cached in `work/meta/<slug>.pdf.json`, so a re-run only fetches journals without a cache:
-
-```
+python scripts/build_pages.py --all --fetch --upload --tmp <scratch dir>
 python scripts/build_pages.py --all --pdf --upload --tmp <scratch dir>
 ```
 
-Build the WMS KBART from a Collection Manager export of Muse.MuseAll (UTF-8 tab-delimited). It writes `work/kbart/muse_pta_kbart.txt` (one `covoverlay` row per unbroken run of volumes, `title_url` pointing at the journal's CloudFront page), `muse_pta_kbart_overlay.txt` (the same rows as `overlay` with the article-linking `oclc_linkscheme` and `title_id`, because `covoverlay` doesn't change `title_url` or linking), `pilot_kbart.txt`, `match_report.tsv` and `unmatched_s3.tsv`. Upload the `covoverlay` file first with "Replace all titles", then the `overlay` file with "Update changes only":
+The first command reads every article's HTML and builds and uploads the pages. The second fills in articles that have only a PDF. Results are cached under `work/meta/`, so an interrupted run resumes and later rebuilds need no downloads. Use `--slug <journal folder>` instead of `--all` for one journal, and `--reparse-html` to re-read only the articles that still lack a title after you improve a profile.
+
+Pages are uploaded as `STANDARD`, `text/html`, with a five-minute cache lifetime.
+
+### 5. Infrastructure
+
+Create these in order, from the templates in `infra/`. The capitalised placeholders (`BUCKET`, `ACCOUNT_ID`, `OAC_ID` and so on) must be replaced first.
+
+1. **WAF** (CloudFront scope, `us-east-1`): an IP set with the campus ranges, the VPN and the EZproxy address, and a web ACL whose default action is Block (`infra/waf/`).
+2. **CloudFront**: an Origin Access Control and a distribution on the bucket's REST endpoint, HTTPS only, GET and HEAD only, IPv6 off if the allow list is IPv4 only (`infra/cloudfront/`).
+3. **Bucket policy**: read access for that one distribution, alongside any deny statements you keep to protect the archive (`infra/s3/`).
+
+Use the distribution's default `*.cloudfront.net` hostname unless you control DNS. **Never delete or recreate the distribution** once the KBART is loaded: its hostname is written into every title URL and the EZproxy stanza.
+
+### 6. EZproxy
 
 ```
-python scripts/build_kbart.py --kbart work/6569_Muse.MuseAll_kbart.txt
+Title Journal archive
+URL https://<distribution>.cloudfront.net/
+Host <distribution>.cloudfront.net
 ```
 
-Journal pages accept `?volume=24&issue=1`, `?year=2012`, `?article=<muse id>` (jump to and highlight) and `?q=<words>` (filter). `?Title=<article title>` opens the article with that title (this is what Discovery article links send).
+### 7. KBART
 
-Check job status and restore progress:
+Export the collection from Collection Manager, then:
 
 ```
-aws s3control describe-job --account-id <acct> --job-id <id> --query "Job.[Status,ProgressSummary]"
-python scripts/check_restore.py --sample 200
+python scripts/build_kbart.py --kbart work/<collection export>.txt
 ```
 
-## AWS resources
+It matches each journal in the bucket to a title in the export by ISSN, then by title, and writes to `work/kbart/`:
 
-| Resource | Purpose |
+| File | Use |
 |---|---|
-| `s3://project.muse` | Content. Private, versioned, SSE-S3. |
-| `s3://wheaton-muse-pta-ops` | Private bucket for Batch Operations manifests and reports (later also CloudFront logs). |
-| IAM role `muse-pta-batchops` | Role assumed by S3 Batch Operations. Inline policy in `infra/batchops/policy.json`. |
-| WAF IP set `muse-pta-allow`, web ACL `muse-pta-acl` | CloudFront scope (us-east-1). Default action is Block. `infra/waf/` |
-| OAC `ETMS8EHK4MXVR`, distribution `EWK48TT92QAN` | `infra/cloudfront/` |
-| Bucket policy | Original delete and lifecycle denies kept, plus CloudFront read-only access. `infra/s3/bucket-policy.json` (the original is saved alongside it). |
+| `kbart_coverage.txt` | `covoverlay` rows: one per unbroken run of volumes, so gaps show as separate ranges |
+| `kbart_overlay.txt` | The same rows as `overlay`, which is what changes `title_url` and linking |
+| `pilot_kbart.txt` | The pilot journal only, for a first test |
+| `unmatched_s3.tsv`, `local_kbart.txt` | Journals in the bucket with no entry in the collection, and a KBART to load them as a local collection |
+| `match_report.tsv` | How every journal matched |
+
+Upload `kbart_coverage.txt` to the collection with **Replace all titles**, then `kbart_overlay.txt` with **Update changes only**. Titles left out of the first file are deselected, so Discovery offers only what you host.
+
+### 8. Test
+
+- On campus, a journal page loads directly.
+- Off campus, the direct address returns 403, and the EZproxy address works.
+- An S3 address returns 403.
+- PDFs open in the browser.
+- In Discovery, journal and article links are proxied, coverage is right, and split coverage shows as separate ranges.
+
+## Link scheme
+
+Article links in Discovery do not use `title_url`. They go through OCLC's linker, which builds the address from the collection's link scheme, and that normally points at the provider's site. To send them to your pages:
+
+- Set the scheme **per title**, in the overlay file (`oclc_linkscheme`). Collection Manager accepts a collection-level Local Link Scheme, but the resolver ignored it in our testing. It also rejects a blank scheme and any value missing from OCLC's link scheme list.
+- A few listed schemes build their address from the title's `title_id`. With `kbart.link_scheme` set to `aphapublications.org` and `kbart.title_id_template` set to `{host}/{slug}/index.html?x=`, the linker sends article links to
+  `https://<host>/<slug>/index.html?x=/action/doSearch?SeriesKey=ajph&Title=<article title>`,
+  and to `...?x=/action/quickLink?...&quickLinkYear=&quickLinkVolume=&quickLinkIssue=` when it has no title.
+- The journal page reads those parameters. One exact title match opens the article, several are listed, a near match is highlighted, and an issue-only link jumps to the issue.
+
+This depends on OCLC keeping that scheme's address pattern, so test it before relying on it. If it changes, links still land on the journal page. The scheme `atoz` is the plain fallback: it always sends article links to `title_url`.
+
+To test without Discovery's search page, use the resolver directly:
+
+```
+https://<institution>.on.worldcat.org/atoztitles/link?genre=article&issn=<issn>&date=<year>&volume=<v>&issue=<n>&spage=<page>&atitle=<title>
+```
+
+## Journal page parameters
+
+| Parameter | Effect |
+|---|---|
+| `?volume=24&issue=1`, `?year=2012` | Jump to the issue |
+| `?article=<article id>` | Jump to and highlight one article |
+| `?q=<words>` | Filter by title or author |
+| `?Title=<article title>` | Open the article with that title |
+
+## Parsing profiles
+
+A profile is a small Python module that turns one article file into metadata. The default, `profiles/citation_meta.py`, reads the `citation_*` meta tags most publishing platforms put in each article page, and the title and author stored in a PDF. Its docstring describes the full contract.
+
+Write your own profile when a provider's files need more: a different folder layout, a cover page on each PDF, titles that are only in the page body, or error pages saved in place of articles. Copy the default, adapt it, and set `profile` in `config.json`. Keeping it under `local/` keeps it out of the repository.
+
+The page builder then handles the rest, including three things that turned out to matter in practice:
+
+- `.html` objects that are really PDFs are detected and read as PDFs.
+- Articles a profile marks as `missing` are left off the page and counted in a note.
+- An article with no title of its own is titled from the previous and next articles, when a profile supplies those.
+
+## Things worth knowing about WMS
+
+- `covoverlay` changes coverage only. `title_url`, `title_id` and `oclc_linkscheme` need `overlay` rows.
+- A KBART upload produces a preview that must be approved in Collection Manager before anything changes.
+- Title-level changes reach the resolver within a few minutes.
+- Titles cannot be added to a global collection by KBART. Extras need a local collection.
+- Exports can contain several entries for one title, and entries that carry another title's OCLC number. The builder prefers an entry whose OCLC number no other title uses, then the one whose coverage overlaps yours most. Report shared numbers to OCLC.
+- Discovery's search pages sit behind a bot check, so automated tests should use the resolver address above.
+
+## Tests
+
+```
+python tests/smoke_test.py
+```
+
+It builds pages and a KBART from made-up articles with the default profile, using only the standard library.
 
 ## License
 
-The scripts and templates are under the [MIT License](LICENSE). The journal content itself is licensed from Project MUSE and is not part of this repository.
+The scripts and templates are under the [MIT License](LICENSE). Journal content is licensed from its publisher and is not part of this repository.

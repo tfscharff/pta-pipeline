@@ -13,6 +13,8 @@ import subprocess
 import sys
 from collections import Counter
 
+from common import load_config, need
+
 
 def head(bucket: str, key: str) -> dict:
     out = subprocess.run(
@@ -26,13 +28,17 @@ def head(bucket: str, key: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--listing", default="muse_listing.txt")
-    ap.add_argument("--bucket", default="project.muse")
+    ap.add_argument("--config", help="configuration file (default: config.json in the repository root)")
+    ap.add_argument("--listing", help="bucket listing (default: \"listing\" in the config)")
+    ap.add_argument("--bucket", help="content bucket (default: \"bucket\" in the config)")
     ap.add_argument("--sample", type=int, default=100)
     ap.add_argument("--seed", type=int)
     args = ap.parse_args()
+    cfg = load_config(args.config)
+    args.listing = args.listing or cfg["listing"]
+    args.bucket = args.bucket or need(cfg, "bucket")
 
-    # Reservoir sample so the 200 MB listing is streamed, not loaded.
+    # Reservoir sample so a large listing is streamed, not loaded.
     rng = random.Random(args.seed)
     sample: list[str] = []
     with open(args.listing, encoding="utf-8") as f:

@@ -1,11 +1,12 @@
-"""Build static journal landing pages and the top-level index from MUSE article HTML.
+"""Build static journal landing pages and a top-level index from the article files in the bucket.
 
-Article metadata (title, authors, volume/issue/year, pages, ISSNs) comes from each article's HTML,
-because the issue folder is MUSE's internal ID. The bucket listing supplies which articles exist
-(including PDF-only ones). Writes:
+The bucket listing says which articles exist. Their metadata (title, authors, volume/issue/year, pages,
+ISSNs) is read from each article's HTML, and from the PDF where there is no usable HTML, by the parsing
+profile named in config.json (see profiles/citation_meta.py). Writes:
 
   <meta>/<slug>.articles.json  parsed article metadata cache (so pages rebuild without re-downloading)
-  <meta>/<slug>.json           journal summary used to build the top-level index
+  <meta>/<slug>.pdf.json       metadata read from PDFs
+  <meta>/<slug>.json           journal summary used to build the top-level index and the KBART
   <out>/<slug>/index.html      one page per journal
   <out>/index.html             top-level journal list (every summary in <meta>)
 
@@ -14,13 +15,13 @@ parsed into the cache, and the temporary folder is removed. Otherwise HTML is re
 when present, falling back to the cache. With --upload, pages go to S3 as STANDARD text/html.
 Journals with a cache are skipped by --fetch, so a re-run resumes where it stopped.
 
-With --pdf (needs `pip install pypdf`), PDF-only articles (no HTML) get title, author, volume/issue/
-date, pages and DOI from the MUSE cover page of the PDF, cached in <meta>/<slug>.pdf.json. A PDF whose
-cover names a different article ID (MUSE filed one PDF under several IDs) is recorded as an error and
-left untitled. --refetch-pdf ignores that cache.
+With --pdf (needs `pip install pypdf`), articles the HTML gave no title (usually PDF-only ones) are read
+from the PDF. --refetch-pdf ignores that cache. With --reparse-html, cached articles that still lack a
+title or an issue designation are downloaded and parsed again, which is how an improved profile is
+applied without re-reading everything.
 
 Usage:
-  python scripts/build_pages.py --slug ab_autobiography_studies
+  python scripts/build_pages.py --slug <journal folder>
   python scripts/build_pages.py --all --fetch --upload --tmp <scratch dir>
   python scripts/build_pages.py --all --pdf --upload --tmp <scratch dir>
 """
@@ -31,81 +32,34 @@ import re
 import shutil
 import subprocess
 import time
-import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
-BUCKET = 'project.muse'
-# <slug>/<vNNN|preprint>/<issue>/[<id>/]<id>.<ext>  (some journals add a per-article folder)
+from common import first, fold, load_config, load_profile, need
+
+# <slug>/<vNNN|preprint>/<issue>/[<id>/]<id>.<ext>  (a profile can supply its own ARTICLE_KEY)
 ARTICLE_KEY = re.compile(r'^(?P<slug>[^/]+)/(?P<vol>v[^/]+|preprint)/(?P<issue>[^/]+)/(?:(?P<sub>\d+)/)?(?P<id>\d+)\.(?P<ext>pdf|html)$')
-TAG = re.compile(r'<[^>]+>')
-# Older MUSE pages use <li>/<div> pairs, newer ones (about 2022 on) <div>s and a <th>/<td> details table.
-DETAIL_ROW = re.compile(r'<(div|th) class="cell label"[^>]*>\s*(.*?)\s*</\1>\s*<(?:div|td) class="cell">\s*(.*?)\s*</(?:div|td)>', re.S)
-SLOT = r'<(?:li|div) class="{}"><span[^>]*>(.*?)</span>'
-META = r'<meta name="{}" content="([^"]*)"'
-NEIGHBOUR = r'<h2>{} Article</h2>\s*</div>\s*<p>(.*?)</p>'
+CFG = PROFILE = None
 
 
-def text(fragment):
-    """Strip tags, unescape entities and collapse whitespace."""
-    return re.sub(r'\s+', ' ', html.unescape(TAG.sub(' ', fragment or ''))).strip()
-
-
-def first(pattern, s, flags=re.S):
-    m = re.search(pattern, s, flags)
-    return m.group(1) if m else ''
+def setup(cfg):
+    """Load the configuration and its parsing profile into the module."""
+    global CFG, PROFILE, ARTICLE_KEY
+    CFG, PROFILE = cfg, load_profile(cfg)
+    ARTICLE_KEY = getattr(PROFILE, 'ARTICLE_KEY', ARTICLE_KEY)
 
 
 def parse_article(path):
-    # Some ".html" objects (most early-release articles, much of Language) are really the article PDF.
+    """Metadata for one article page, from the profile. Some ".html" objects are really the article PDF."""
     with open(path, 'rb') as f:
         is_pdf = f.read(5) == b'%PDF-'
     if is_pdf:
         try:
-            meta = parse_pdf(path, path.stem)
+            meta = PROFILE.parse_pdf(path, path.stem)
         except Exception as e:
             meta = {'src': 'pdf', 'title': '', 'error': f'{type(e).__name__}: {e}'}
         return {**meta, 'html_is_pdf': True}
-    s = path.read_text(encoding='utf-8', errors='replace')
-    # The html_title comment markers use non-breaking spaces, so match the title div itself.
-    raw_title = first(r'<div id="article-title"[^>]*>(.*?)<!--\W*/html_title', s)
-    main = text(re.sub(r'<span id="subtitle">.*', '', raw_title, flags=re.S))
-    sub = text(first(r'<span id="subtitle">(.*?)</span>', raw_title))
-    title = main
-    if sub:
-        title = f'{main} {sub}' if main.endswith((':', '?', '!', '.')) else f'{main}: {sub}'
-    front = first(r'<div id="front">(.*?)<div id="body">', s) or s
-    authors = []
-    for c in re.findall(r'<div class="contrib">(.*?)</div>', front, re.S):
-        name = text(re.sub(r'<a class="top_bio_wrap_link".*?</a>', '', c, flags=re.S))
-        if name:
-            authors.append(name)
-    # Pages without the article-title div (many from before about 2005) still carry the citation_* meta
-    # tags. Their content is entity-escaped markup, so unescape before stripping tags. The page head has
-    # one set ("First Last"); the embedded original article repeats them as "Last, First", so prefer the head.
-    head = s.split('</head>', 1)[0]
-    if not title:
-        title = (text(html.unescape(first(META.format('citation_title'), head) or first(META.format('citation_title'), s)))
-                 or text(html.unescape(first(r'<title>\s*Project MUSE\s*-\s*(.*?)</title>', s))))
-    if not authors:
-        found = re.findall(META.format('citation_author'), head) or re.findall(META.format('citation_author'), s)
-        authors = list(dict.fromkeys(n for n in (text(html.unescape(c)) for c in found) if n))
-    details = {text(k): text(v) for _, k, v in DETAIL_ROW.findall(s)}
-    if not title and '<div class="page404"' in s:  # MUSE's own error page: there is no article behind it
-        return {'title': '', 'authors': [], 'missing': True}
-    return {
-        'journal': text(first(SLOT.format('journal'), s)),
-        'designation': text(first(SLOT.format('designation'), s)),
-        'publisher': text(first(SLOT.format('publisher'), s)),
-        'type': text(first(SLOT.format('type'), s)),
-        'title': title,
-        'authors': authors,
-        'pages': details.get('Pages', ''),
-        'issn': details.get('ISSN', ''),
-        'print_issn': details.get('Print ISSN', ''),
-        'prev': text(first(NEIGHBOUR.format('Previous'), s)),
-        'next': text(first(NEIGHBOUR.format('Next'), s)),
-    }
+    return PROFILE.parse_article(path)
 
 
 def tkey(s):
@@ -176,10 +130,6 @@ def parse_designation(d, vol_folder):
     return vol.strip(), number.strip(), years[-1] if years else ''
 
 
-def fold(s):
-    return ''.join(c for c in unicodedata.normalize('NFKD', s.lower()) if not unicodedata.combining(c))
-
-
 def read_listing(listing, slugs=None):
     """Return {slug: {(vol, issue, id): {'exts': set, 'base': key without extension}}}, one streaming pass.
 
@@ -191,7 +141,7 @@ def read_listing(listing, slugs=None):
             m = ARTICLE_KEY.match(key)
             if not m or (slugs is not None and m['slug'] not in slugs):
                 continue
-            if m['sub'] and m['sub'] != m['id']:
+            if m.groupdict().get('sub') and m['sub'] != m['id']:
                 continue
             rec = out[m['slug']].setdefault((m['vol'], m['issue'], m['id']),
                                             {'exts': set(), 'base': key[len(m['slug']) + 1:key.rindex('.')]})
@@ -212,59 +162,6 @@ def parse_journal_html(slug, src, holdings):
     return metas
 
 
-# Cover-page citation line, e.g. "The Thomist: A Speculative Quarterly Review, Volume 3, Number 1, January 1941,
-# pp. 1-7 (Article)". The designation starts at the first Volume/Number/Issue-style keyword after a comma.
-DESIG_WORDS = r'(?:Volumes?|Numbers?|Issues?|Vol\.|No\.|Nos\.|Years?|Supplement|Special Issue|Annual)\b'
-CITATION = re.compile(r'^(?P<journal>.+?), (?P<desig>' + DESIG_WORDS + r'.*?)(?:, (?P<pages>pp?\.\s*[^()]+?))?\s*\((?P<type>[^()]*)\)$')
-
-
-def norm(s):
-    return re.sub(r'\s+', ' ', unicodedata.normalize('NFC', s or '')).strip()
-
-
-def parse_pdf(path, art_id):
-    """Article metadata from a MUSE PDF: title/author from the document info, the rest from the cover page."""
-    from pypdf import PdfReader  # only needed for --pdf
-    r = PdfReader(path)
-    info = r.metadata or {}
-    title, author = norm(info.get('/Title')), norm(info.get('/Author'))
-    lines = [norm(l) for l in (r.pages[0].extract_text() or '').splitlines()]
-    lines = [l for l in lines if l]
-    cut = next((i for i, l in enumerate(lines) if l.startswith('Published by')), None)
-    publisher = lines[cut][len('Published by'):].strip() if cut is not None else ''
-    head = lines[:cut] if cut is not None else lines
-    rest = ' '.join(head)
-    for part in (title, author):  # the cover repeats title then author before the citation
-        if part and rest.startswith(part):
-            rest = rest[len(part):].strip()
-    m = CITATION.match(rest) if title else None
-    if not m:  # title/author not on the cover as given: take the shortest tail that parses as a citation
-        for i in range(len(head) - 1, -1, -1):
-            m = CITATION.match(' '.join(head[i:]))
-            if m:
-                if not title:  # the cover runs title line(s), then one author line, then the citation
-                    lead = head[:i]
-                    if len(lead) > 1 and not author:
-                        author, lead = lead[-1], lead[:-1]
-                    title = ' '.join(lead)
-                break
-    body = '\n'.join(lines)
-    cover_id = first(r'muse\.jhu\.edu/article/(\d+)', body, 0)
-    meta = {'src': 'pdf', 'title': '', 'authors': [author] if author else [], 'publisher': publisher,
-            'doi': first(r'doi\.org/(\S+)', body, 0)}
-    if cover_id and cover_id != art_id:
-        meta['error'] = f'cover page is for article {cover_id}'
-        return meta
-    typ = m['type'].strip() if m else ''
-    if re.search(r'\s*\(review\)$', title, re.I):
-        title, typ = re.sub(r'\s*\(review\)$', '', title, flags=re.I), 'Review'
-    meta.update(title=title, type=typ)
-    if m:
-        meta.update(journal=m['journal'], designation=m['desig'].strip(' ,'),
-                    pages=re.sub(r'^pp?\.\s*', '', (m['pages'] or '').strip()))
-    return meta
-
-
 def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400, ext='pdf'):
     """Download the given article PDFs (or HTML with ext='html') in batches, parse each, delete them.
     Returns ({base: meta}, failures)."""
@@ -274,7 +171,7 @@ def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400, ext='pdf'):
     dest = tmp / slug
     for i in range(0, len(bases), chunk):
         part = bases[i:i + chunk]
-        cmd = ['aws', 's3', 'cp', f's3://{BUCKET}/{slug}/', str(dest), '--recursive', '--only-show-errors', '--exclude', '*']
+        cmd = ['aws', 's3', 'cp', f"s3://{need(CFG, 'bucket')}/{slug}/", str(dest), '--recursive', '--only-show-errors', '--exclude', '*']
         for b in part:
             cmd += ['--include', f'{b}.{ext}']
         rc = subprocess.run(cmd, capture_output=True, text=True)
@@ -284,7 +181,7 @@ def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400, ext='pdf'):
                 failures.append(b)
                 continue
             try:
-                metas[b] = parse_pdf(p, b.rsplit('/', 1)[-1]) if ext == 'pdf' else parse_article(p)
+                metas[b] = PROFILE.parse_pdf(p, b.rsplit('/', 1)[-1]) if ext == 'pdf' else parse_article(p)
             except Exception as e:
                 metas[b] = {'src': ext, 'error': f'{type(e).__name__}: {e}'}
         shutil.rmtree(dest, ignore_errors=True)
@@ -296,16 +193,16 @@ def fetch_parse_pdfs(slug, bases, tmp, log, chunk=400, ext='pdf'):
 def sync_html(slug, dest):
     """Download a journal's article-level HTML (not figure pages) from S3."""
     # --force-glacier-transfer: the CLI otherwise skips GLACIER/DEEP_ARCHIVE objects even when restored.
-    cmd = ['aws', 's3', 'sync', f's3://{BUCKET}/{slug}/', str(dest / slug), '--only-show-errors',
+    cmd = ['aws', 's3', 'sync', f"s3://{need(CFG, 'bucket')}/{slug}/", str(dest / slug), '--only-show-errors',
            '--force-glacier-transfer', '--exclude', '*', '--include', '*.html']
-    for d in ('full', 'thumb', 'inline', 'file'):
+    for d in getattr(PROFILE, 'ASSET_DIRS', ()):
         cmd += ['--exclude', f'*/{d}/*']
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode, r.stderr.strip()
 
 
 def upload(local, key):
-    cmd = ['aws', 's3', 'cp', str(local), f's3://{BUCKET}/{key}', '--only-show-errors', '--storage-class', 'STANDARD',
+    cmd = ['aws', 's3', 'cp', str(local), f"s3://{need(CFG, 'bucket')}/{key}", '--only-show-errors', '--storage-class', 'STANDARD',
            '--content-type', 'text/html; charset=utf-8', '--cache-control', 'max-age=300']
     subprocess.run(cmd, check=True)
 
@@ -397,6 +294,7 @@ if(target){target.classList.add('hit');var h=target.querySelector('h3')||target;
 
 
 def page(title, body, noun, crumb=''):
+    footer = html.escape(CFG['site']['footer'], quote=False)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -412,7 +310,7 @@ def page(title, body, noun, crumb=''):
 {crumb}
 {body}
 <footer>
-<p>Madeleine Clark Wallace Library, Wheaton College. These are the library's archived copies of journal issues licensed from Project MUSE, for current Wheaton students, faculty and staff.</p>
+<p>{footer}</p>
 </footer>
 </div>
 <script>{FILTER_JS}</script>
@@ -485,8 +383,9 @@ def build_journal(slug, holdings, metas):
     if years:
         span += f", {range_text(years[0], years[-1])}"
     holds = f'The library holds {html.escape(span)}. ' if span else ''
-    gone = (f" {missing} article{' is' if missing == 1 else 's are'} not listed because Project MUSE supplied"
-            ' an error page in place of the article.') if missing else ''
+    site = CFG['site']
+    gone = (f" {missing} article{' is' if missing == 1 else 's are'} not listed because "
+            f"{html.escape(site['provider'], quote=False)} supplied an error page in place of the article.") if missing else ''
 
     out = [f'<header>\n<h1>{html.escape(journal)}</h1>',
            f'<p class="about">{" ".join(about)}</p>' if about else '',
@@ -520,8 +419,8 @@ def build_journal(slug, holdings, metas):
         out.append('</ol>\n</section>\n</div>\n</section>')
     out.append('</main>')
 
-    crumb = '<p class="crumb"><a href="../index.html">All archived Project MUSE journals</a></p>'
-    doc = page(f'{journal} | Wallace Library Project MUSE archive', '\n'.join(x for x in out if x), 'articles', crumb)
+    crumb = f'<p class="crumb"><a href="../index.html">{html.escape(site["all_journals"], quote=False)}</a></p>'
+    doc = page(f"{journal} | {site['journal_title_suffix']}", '\n'.join(x for x in out if x), 'articles', crumb)
     all_arts = [a for g in groups for a in g['arts']] + preprints
     summary = {'slug': slug, 'journal': journal, 'publisher': info.get('publisher', ''), 'issn': info.get('issn', ''),
                'print_issn': info.get('print_issn', ''), 'volumes': [vols[0], vols[-1]],
@@ -560,9 +459,10 @@ def article_li(art_id, exts, m, base):
 
 def build_index(summaries):
     summaries = sorted(summaries, key=lambda s: fold(re.sub(r'^(the|a|an)\s+', '', s['journal'], flags=re.I)))
-    out = ['<header>\n<h1>Project MUSE journal archive</h1>',
-           f'<p class="about">Back issues of {len(summaries)} journal{"s" if len(summaries) != 1 else ""} the library licensed from Project MUSE. '
-           'Choose a journal to see its volumes and articles.</p>\n</header>',
+    site = CFG['site']
+    count = f'{len(summaries)} journal{"s" if len(summaries) != 1 else ""}'
+    out = [f'<header>\n<h1>{html.escape(site["archive_name"], quote=False)}</h1>',
+           f'<p class="about">{html.escape(site["index_intro"].format(count=count), quote=False)}</p>\n</header>',
            '<div class="find" role="search">', '<label for="q">Find a journal by title, publisher or ISSN</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
            f'<p id="status" role="status" aria-live="polite">{len(summaries)} journal{"s" if len(summaries) != 1 else ""}.</p>', '</div>',
@@ -577,7 +477,7 @@ def build_index(summaries):
         search = fold(' '.join([s['journal'], s['publisher'], s['issn'], s['print_issn']]))
         out.append(f'<li data-text="{html.escape(search)}"><a class="t" href="{s["slug"]}/index.html">{html.escape(s["journal"])}</a><p>{meta}</p></li>')
     out.append('</ol>\n</main>')
-    return page('Project MUSE journal archive | Wallace Library', '\n'.join(out), 'journals')
+    return page(site['index_title'], '\n'.join(out), 'journals')
 
 
 def main():
@@ -592,11 +492,12 @@ def main():
                     help='for articles the HTML gave no title (PDF-only), read title etc. from the PDF (needs pypdf)')
     ap.add_argument('--refetch-pdf', action='store_true', help='with --pdf, redo journals that already have a PDF cache')
     ap.add_argument('--reparse-html', action='store_true',
-                    help='re-download and re-parse cached articles that have a title but no journal/designation '
-                         '(parsed before the newer MUSE page template was supported)')
+                    help='re-download and re-parse cached articles that lack a title or an issue designation '
+                         '(use after improving the parsing profile)')
     ap.add_argument('--tmp', type=Path, help='temporary download folder for --fetch / --pdf / --reparse-html')
     ap.add_argument('--upload', action='store_true', help='upload pages to S3 (STANDARD, text/html)')
-    ap.add_argument('--listing', default='muse_listing.txt')
+    ap.add_argument('--config', help='configuration file (default: config.json in the repository root)')
+    ap.add_argument('--listing', help='bucket listing (default: "listing" in the config)')
     ap.add_argument('--out', default='site', type=Path)
     ap.add_argument('--meta', default='work/meta', type=Path)
     ap.add_argument('--log', default='logs/build_pages.log', type=Path)
@@ -604,6 +505,9 @@ def main():
     if (a.fetch or a.pdf) and not a.tmp:
         ap.error('--fetch and --pdf need --tmp')
 
+    setup(load_config(a.config))
+    a.listing = a.listing or CFG['listing']
+    rev = getattr(PROFILE, 'REVISION', '1')
     a.meta.mkdir(parents=True, exist_ok=True)
     a.log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -643,18 +547,18 @@ def main():
         else:
             metas = {}
         if a.reparse_html:
-            # Gaps from earlier parsers: no journal/designation (newer template), and the old 'Untitled'
-            # placeholder (title only in the citation_* meta tags, a PDF saved as .html, or a MUSE error
-            # page). Entries are marked 'meta2' once re-read, so a title of 'Untitled' left after that is real.
+            # Gaps a better profile may fill. An article with no title is retried once per profile
+            # REVISION; one with a title but no journal or issue designation is retried once. Re-read
+            # entries are stamped with the revision.
             want = [b for b, m in metas.items() if not m.get('error') and (
                 (m.get('title') and not m.get('journal') and not m.get('designation') and not m.get('reparsed'))
-                or (m.get('title') == 'Untitled' and m.get('reparsed') != 'meta2'))]
+                or (not m.get('title') and m.get('reparsed') != rev))]
             if want:
                 t0 = time.time()
                 got, fails = fetch_parse_pdfs(slug, want, a.tmp, log, ext='html')
                 for b, m in got.items():
                     # keep the old entry only when the page itself could not be parsed
-                    metas[b] = {**(metas[b] if m.get('src') == 'html' else m), 'reparsed': 'meta2'}
+                    metas[b] = {**(metas[b] if m.get('src') == 'html' else m), 'reparsed': rev}
                 cache.write_text(json.dumps(metas, ensure_ascii=False), encoding='utf-8')  # failures retry next run
                 log(f'[{i}/{len(slugs)}] {slug}: re-parsed {len(got)} HTML in {time.time() - t0:.0f}s'
                     + (f', HTML FETCH FAILED for {len(fails)}, e.g. {fails[0]}' if fails else ''))
