@@ -90,3 +90,7 @@ python scripts/check_restore.py --sample 200
 | WAF IP set `muse-pta-allow`, web ACL `muse-pta-acl` | CloudFront scope (us-east-1). Default action is Block. `infra/waf/` |
 | OAC `ETMS8EHK4MXVR`, distribution `EWK48TT92QAN` | `infra/cloudfront/` |
 | Bucket policy | Original delete and lifecycle denies kept, plus CloudFront read-only access. `infra/s3/bucket-policy.json` (the original is saved alongside it). |
+
+## License
+
+The scripts and templates are under the [MIT License](LICENSE). The journal content itself is licensed from Project MUSE and is not part of this repository.
