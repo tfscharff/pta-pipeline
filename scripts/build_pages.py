@@ -474,10 +474,10 @@ def build_index(summaries):
         span = vol_span(v)
         if y:
             span += f" ({range_text(y[0], y[1])})"
-        meta = ' '.join(x for x in [html.escape(s['publisher']) + '.' if s['publisher'] else '', html.escape(span) + '.' if span else '',
-                                     f"{s['articles']} articles."] if x)
+        # two lines under the title: publisher, then coverage
+        meta = ''.join(f'<p>{html.escape(x)}.</p>' for x in (s['publisher'], span) if x)
         search = fold(' '.join([s['journal'], s['publisher'], s['issn'], s['print_issn']]))
-        out.append(f'<li data-text="{html.escape(search)}"><a class="t" href="{s["slug"]}/index.html">{html.escape(s["journal"])}</a><p>{meta}</p></li>')
+        out.append(f'<li data-text="{html.escape(search)}"><a class="t" href="{s["slug"]}/index.html">{html.escape(s["journal"])}</a>{meta}</li>')
     out.append('</ol>\n</main>')
     return page(site['index_title'], '\n'.join(out), 'journals')
 
