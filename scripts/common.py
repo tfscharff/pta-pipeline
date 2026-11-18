@@ -19,6 +19,7 @@ DEFAULTS = {
         'archive_name': 'Journal archive',          # heading of the top-level index
         'index_title': 'Journal archive',           # <title> of the top-level index
         'journal_title_suffix': 'Journal archive',  # "<journal> | <suffix>" in each journal page <title>
+        'show_index_heading': True,                 # false hides the heading visually but keeps it for screen readers
         'index_intro': 'Back issues of {count} held by the library. Choose a journal to see its volumes and articles.',  # set to '' to leave it out
         'all_journals': 'All archived journals',    # link from a journal page back to the index
         'provider': 'the provider',                 # who supplied the files, used in notes about missing articles

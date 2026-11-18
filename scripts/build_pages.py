@@ -462,7 +462,8 @@ def build_index(summaries):
     site = CFG['site']
     count = f'{len(summaries)} journal{"s" if len(summaries) != 1 else ""}'
     intro = site['index_intro'].format(count=count).strip()  # an empty index_intro leaves the line out
-    out = [f'<header>\n<h1>{html.escape(site["archive_name"], quote=False)}</h1>'
+    h1_class = '' if site['show_index_heading'] else ' class="vh"'  # hidden, but kept for screen readers
+    out = [f'<header>\n<h1{h1_class}>{html.escape(site["archive_name"], quote=False)}</h1>'
            + (f'\n<p class="about">{html.escape(intro, quote=False)}</p>' if intro else '') + '\n</header>',
            '<div class="find" role="search">', '<label for="q">Find a journal by title, publisher or ISSN</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
