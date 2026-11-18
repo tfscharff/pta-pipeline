@@ -461,8 +461,9 @@ def build_index(summaries):
     summaries = sorted(summaries, key=lambda s: fold(re.sub(r'^(the|a|an)\s+', '', s['journal'], flags=re.I)))
     site = CFG['site']
     count = f'{len(summaries)} journal{"s" if len(summaries) != 1 else ""}'
-    out = [f'<header>\n<h1>{html.escape(site["archive_name"], quote=False)}</h1>',
-           f'<p class="about">{html.escape(site["index_intro"].format(count=count), quote=False)}</p>\n</header>',
+    intro = site['index_intro'].format(count=count).strip()  # an empty index_intro leaves the line out
+    out = [f'<header>\n<h1>{html.escape(site["archive_name"], quote=False)}</h1>'
+           + (f'\n<p class="about">{html.escape(intro, quote=False)}</p>' if intro else '') + '\n</header>',
            '<div class="find" role="search">', '<label for="q">Find a journal by title, publisher or ISSN</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
            f'<p id="status" role="status" aria-live="polite">{len(summaries)} journal{"s" if len(summaries) != 1 else ""}.</p>', '</div>',
