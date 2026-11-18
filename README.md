@@ -17,7 +17,7 @@ Tooling for self-hosting Wheaton College's Project MUSE post-termination access 
 ## Access
 
 - **CloudFront hostname:** `https://d2cfus91tk2xx.cloudfront.net/` (distribution `EWK48TT92QAN`). **Never delete or recreate it**, because the hostname is baked into the KBART and the EZproxy stanza.
-- **WAF allow list** (`muse-pta-allow`): `CAMPUS_CIDR` (campus), `VPN_IP/32` (VPN), `EZPROXY_IP/32` (hosted EZproxy `wheatonma.idm.oclc.org`). Everything else is blocked. IPv6 is disabled on the distribution because the allow list is IPv4 only.
+- **WAF allow list** (`muse-pta-allow`): `CAMPUS_CIDR` (campus), `VPN_IP/32` (VPN), `EZPROXY_IP/32` (hosted EZproxy `wheatonma.idm.oclc.org`). Everything else is blocked. The addresses and the AWS account number are kept out of this repo: read the live allow list with `aws wafv2 get-ip-set --scope CLOUDFRONT --region us-east-1 --name muse-pta-allow --id 2fe86ca7-645b-4e98-a118-b63d3e9710bf --query IPSet.Addresses`, and substitute `ACCOUNT_ID` in `infra/` JSON with the output of `aws sts get-caller-identity --query Account --output text` before using a file. IPv6 is disabled on the distribution because the allow list is IPv4 only.
 - **EZproxy stanza:**
   ```
   Title Project MUSE Post-Termination Access (Wallace Library)

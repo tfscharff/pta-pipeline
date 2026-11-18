@@ -69,6 +69,7 @@ Self-host Project MUSE **post-termination access (PTA)** journal PDFs for Wheato
 
 ## Operating rules
 
+- Keep the AWS account number, IP addresses and personal email addresses out of tracked files and commit messages. Use the placeholders `ACCOUNT_ID`, `CAMPUS_CIDR`, `VPN_IP` and `EZPROXY_IP`; the live values come from AWS (see README, Access). History was rewritten on 2026-11-17 to remove them.
 - Work autonomously. Stop and confirm only before costly or hard-to-undo AWS mutations:
   - Glacier restore requests (they incur cost);
   - in-place storage-class copies (GLACIER_IR has a 90-day minimum storage charge);
