@@ -19,5 +19,16 @@
     "title_id_template": "",
     "avoid_title_ids": [],
     "pilot": ""
+  },
+  "search": {
+    "enabled": false,
+    "db_ids": [],
+    "item_sub_type": "artchap-artcl",
+    "held_by_institution": "",
+    "wskey_param": "/pta-search/wskey",
+    "proxy_login": "https://proxy.example.edu/login?url=",
+    "title": "Article search",
+    "label": "Search articles in the archive",
+    "index_link": "Search articles across all journals"
   }
 }

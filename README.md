@@ -149,6 +149,27 @@ To test without Discovery's search page, use the resolver directly:
 https://<institution>.on.worldcat.org/atoztitles/link?genre=article&issn=<issn>&date=<year>&volume=<v>&issue=<n>&spage=<page>&atitle=<title>
 ```
 
+## Article search
+
+An article-level search box for research guides. Its results come from the WorldCat Discovery central index, filtered to the journals and years in the archive, and each result links to the archived copy.
+
+- `search.html` sits at the root of the archive. It calls `api/search?q=…&offset=…` on the same CloudFront host.
+- CloudFront sends `/api/*` to a small AWS Lambda function, `search/relay.py`, so the same WAF allow list and EZproxy apply. The function holds the OCLC key, searches the Discovery API with the limits in `config.json` (`search.db_ids`, `search.item_sub_type`, `search.held_by_institution`), and keeps only articles whose journal (by ISSN, then title) and year are in the archive.
+- Each result links to `<slug>/index.html?Title=…&volume=…&issue=…`, which the journal page opens as described above.
+
+Setup:
+
+1. Request a WSKey for the **WorldCat Discovery API**, type machine-to-machine, at https://platform.worldcat.org/wskey/. It needs a WMS or Discovery Premium subscription.
+2. Store it as `<key>:<secret>` in an SSM SecureString named by `search.wskey_param` (default `/pta-search/wskey`). Type this in your own terminal, not in a shared session:
+   `aws ssm put-parameter --name /pta-search/wskey --type SecureString --value "<key>:<secret>"`
+3. Fill in the `search` section of `config.json` and run `python scripts/build_search.py`. It writes `site/search.html`, the Lambda package `work/search/relay.zip` and the research-guide box `work/search/widget.html`.
+4. Create the Lambda function `pta-search-relay`: Python 3.13, handler `relay.handler`, timeout 30 seconds, environment `WSKEY_PARAM`, and a role from `infra/search/relay-trust.json` and `relay-policy.json`. Give it a function URL with auth type `AWS_IAM`.
+5. In CloudFront, add an Origin Access Control of type `lambda`, the function URL as an origin and an `/api/*` behavior (`infra/search/cloudfront-api.json`). Then allow the distribution to call the function: `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`, principal `cloudfront.amazonaws.com`, source ARN the distribution.
+6. Run `python scripts/build_search.py --upload`, set `search.enabled` to true and rebuild the index so it links to the search page.
+7. Paste `work/search/widget.html` into a LibGuides Media / Widget box. It opens the search through `search.proxy_login`, so it works on and off campus.
+
+Rebuild and redeploy `relay.zip` when journals are added, because the function carries the archive's journal list.
+
 ## Journal page parameters
 
 | Parameter | Effect |

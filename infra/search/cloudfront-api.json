@@ -1,0 +1,36 @@
+{
+  "_comment": "Pieces to merge into the distribution config (get-distribution-config, edit, update-distribution with the ETag). Add the origin to Origins.Items and the behavior to CacheBehaviors.Items, raising each Quantity. FUNCTION_URL_HOST is the function URL's host name without https:// or the trailing slash; LAMBDA_OAC_ID is an Origin Access Control with OriginAccessControlOriginType lambda. The cache policy is the managed CachingDisabled; the origin request policy is the managed AllViewerExceptHostHeader, which passes the query string.",
+  "Origin": {
+    "Id": "search-relay",
+    "DomainName": "FUNCTION_URL_HOST",
+    "OriginAccessControlId": "LAMBDA_OAC_ID",
+    "CustomOriginConfig": {
+      "HTTPPort": 80,
+      "HTTPSPort": 443,
+      "OriginProtocolPolicy": "https-only",
+      "OriginSslProtocols": { "Quantity": 1, "Items": ["TLSv1.2"] },
+      "OriginReadTimeout": 30,
+      "OriginKeepaliveTimeout": 5
+    }
+  },
+  "CacheBehavior": {
+    "PathPattern": "/api/*",
+    "TargetOriginId": "search-relay",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "AllowedMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"],
+      "CachedMethods": { "Quantity": 2, "Items": ["GET", "HEAD"] }
+    },
+    "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+    "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+    "Compress": true
+  },
+  "LambdaOac": {
+    "Name": "pta-search-relay",
+    "Description": "CloudFront signs requests to the search relay's function URL",
+    "SigningProtocol": "sigv4",
+    "SigningBehavior": "always",
+    "OriginAccessControlOriginType": "lambda"
+  }
+}

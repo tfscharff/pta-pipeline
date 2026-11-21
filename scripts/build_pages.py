@@ -293,7 +293,7 @@ if(target){target.classList.add('hit');var h=target.querySelector('h3')||target;
 """
 
 
-def page(title, body, noun, crumb=''):
+def page(title, body, noun, crumb='', script=FILTER_JS):
     footer = html.escape(CFG['site']['footer'], quote=False)
     return f"""<!doctype html>
 <html lang="en">
@@ -313,7 +313,7 @@ def page(title, body, noun, crumb=''):
 <p>{footer}</p>
 </footer>
 </div>
-<script>{FILTER_JS}</script>
+<script>{script}</script>
 </body>
 </html>
 """
@@ -464,7 +464,9 @@ def build_index(summaries):
     intro = site['index_intro'].format(count=count).strip()  # an empty index_intro leaves the line out
     h1_class = '' if site['show_index_heading'] else ' class="vh"'  # hidden, but kept for screen readers
     out = [f'<header>\n<h1{h1_class}>{html.escape(site["archive_name"], quote=False)}</h1>'
-           + (f'\n<p class="about">{html.escape(intro, quote=False)}</p>' if intro else '') + '\n</header>',
+           + (f'\n<p class="about">{html.escape(intro, quote=False)}</p>' if intro else '')
+           + (f'\n<p class="about"><a href="search.html">{html.escape(CFG["search"]["index_link"], quote=False)}</a></p>'
+              if CFG['search']['enabled'] and CFG['search']['index_link'] else '') + '\n</header>',
            '<div class="find" role="search">', '<label for="q">Find a journal by title, publisher or ISSN</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
            f'<p id="status" role="status" aria-live="polite">{len(summaries)} journal{"s" if len(summaries) != 1 else ""}.</p>', '</div>',

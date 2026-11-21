@@ -92,6 +92,31 @@ def main():
         assert all(r['ACTION'] == 'overlay' and r['oclc_linkscheme'] == 'example.scheme'
                    and r['title_id'] == 'example.cloudfront.net/sample_studies/index.html?x=' for r in over), over
         assert rows('pilot_kbart.txt') == cov and not rows('local_kbart.txt')
+
+        # article search: page, relay package and research-guide box
+        cfg['search'] = {'enabled': True, 'db_ids': [99], 'held_by_institution': '1', 'proxy_login': 'https://proxy.example/login?url='}
+        (t / 'config.json').write_text(json.dumps(cfg), encoding='utf-8')
+        run('scripts/build_search.py', '--config', t / 'config.json', '--meta', t / 'meta', '--out', t / 'site', '--work', t / 'search')
+        assert 'id="sq"' in (t / 'site' / 'search.html').read_text(encoding='utf-8'), 'search page missing its box'
+        assert 'https://proxy.example/login?url=https://example.cloudfront.net/search.html?q=' in \
+            (t / 'search' / 'widget.html').read_text(encoding='utf-8'), 'search box does not go through the proxy'
+        sys.path.insert(0, str(t / 'search' / 'relay'))
+        import relay
+        settings, titles = relay.load()
+        assert settings['db_ids'] == [99] and titles['issn']['12345679'] == 'sample_studies', titles
+        fake = {'numberOfRecords': 120, 'briefRecords': [
+            {'title': 'On Sampling & Its Limits /', 'creator': 'Ada Example', 'date': '2001',
+             'source': {'sourceTitle': 'Journal of sample studies', 'sourceIssn': '1234-5679', 'relatedParts': ['Vol. 1, no. 1 (2001), p. 1-20']}},
+            {'title': 'Held elsewhere', 'date': '2001', 'source': {'sourceTitle': 'Other Journal', 'sourceIssn': '9999-9999'}},
+            {'title': 'Outside our years', 'date': '2003', 'source': {'sourceTitle': 'The Journal of Sample Studies'}},
+            {'title': 'Volume Two Opens', 'date': '2002', 'source': {'sourceTitle': 'The Journal of Sample Studies', 'volumes': ['2'], 'issues': ['1']}}]}
+        got = relay.search('sampling', 0, settings, titles, fetch=lambda q, o, s: fake)
+        assert [r['title'] for r in got['results']] == ['On Sampling & Its Limits', 'Volume Two Opens'], got
+        first = got['results'][0]
+        assert (first['volume'], first['issue'], first['pages']) == ('1', '1', '1-20'), first
+        assert first['link'] == 'sample_studies/index.html?Title=On+Sampling+%26+Its+Limits&volume=1&issue=1&year=2001', first
+        assert got['next'] == 50 and got['checked'] == 4, got
+        assert relay.handler({'queryStringParameters': {}})['statusCode'] == 400
     print('smoke test passed')
 
 
