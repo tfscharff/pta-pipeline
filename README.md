@@ -165,7 +165,7 @@ Setup:
 3. Fill in the `search` section of `config.json` and run `python scripts/build_search.py`. It writes `site/search.html`, the Lambda package `work/search/relay.zip` and the research-guide box `work/search/widget.html`.
 4. Create the Lambda function `pta-search-relay`: Python 3.13, handler `relay.handler`, timeout 30 seconds, environment `WSKEY_PARAM`, and a role from `infra/search/relay-trust.json` and `relay-policy.json`. Give it a function URL with auth type `AWS_IAM`.
 5. In CloudFront, add an Origin Access Control of type `lambda`, the function URL as an origin and an `/api/*` behavior (`infra/search/cloudfront-api.json`). Then allow the distribution to call the function: `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`, principal `cloudfront.amazonaws.com`, source ARN the distribution.
-6. Run `python scripts/build_search.py --upload`, set `search.enabled` to true and rebuild the index so it links to the search page.
+6. Run `python scripts/build_search.py --upload`, set `search.enabled` to true and rebuild the index, which then opens with an article search box (labelled with `search.index_link`) above the journal list.
 7. Paste `work/search/widget.html` into a LibGuides Media / Widget box. It opens the search through `search.proxy_login`, so it works on and off campus.
 
 Rebuild and redeploy `relay.zip` when journals are added, because the function carries the archive's journal list.

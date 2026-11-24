@@ -293,7 +293,12 @@ if(target){target.classList.add('hit');var h=target.querySelector('h3')||target;
 """
 
 
-def page(title, body, noun, crumb='', script=FILTER_JS):
+INDEX_SEARCH_CSS = ('.row{display:flex;flex-wrap:wrap;gap:.5rem;max-width:32rem}.row input{flex:1 1 14rem;min-width:0;width:auto}'
+                    '.find button{font:inherit;font-weight:600;color:var(--bg);background:var(--accent);border:0;border-radius:4px;'
+                    'padding:.55rem 1.2rem;cursor:pointer}.asearch+.find{border-top:0;margin-top:-2.75rem}')
+
+
+def page(title, body, noun, crumb='', script=FILTER_JS, extra_css=''):
     footer = html.escape(CFG['site']['footer'], quote=False)
     return f"""<!doctype html>
 <html lang="en">
@@ -302,7 +307,7 @@ def page(title, body, noun, crumb='', script=FILTER_JS):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>{html.escape(title)}</title>
-<style>{CSS}</style>
+<style>{CSS}{extra_css}</style>
 </head>
 <body data-noun="{noun}">
 <a class="skip" href="#list">Skip to the list</a>
@@ -465,8 +470,12 @@ def build_index(summaries):
     h1_class = '' if site['show_index_heading'] else ' class="vh"'  # hidden, but kept for screen readers
     out = [f'<header>\n<h1{h1_class}>{html.escape(site["archive_name"], quote=False)}</h1>'
            + (f'\n<p class="about">{html.escape(intro, quote=False)}</p>' if intro else '')
-           + (f'\n<p class="about"><a href="search.html">{html.escape(CFG["search"]["index_link"], quote=False)}</a></p>'
-              if CFG['search']['enabled'] and CFG['search']['index_link'] else '') + '\n</header>',
+           + '\n</header>',
+           *(['<form class="find asearch" role="search" action="search.html" method="get">',
+              f'<label for="aq">{html.escape(CFG["search"]["index_link"], quote=False)}</label>',
+              '<div class="row"><input id="aq" name="q" type="search" required><button type="submit">Search</button></div>',
+              '<p><a href="search.html?adv=1">Advanced search</a></p>', '</form>']
+             if CFG['search']['enabled'] and CFG['search']['index_link'] else []),
            '<div class="find" role="search">', '<label for="q">Find a journal by title, publisher or ISSN</label>',
            '<input id="q" type="search" autocomplete="off" spellcheck="false">',
            f'<p id="status" role="status" aria-live="polite">{len(summaries)} journal{"s" if len(summaries) != 1 else ""}.</p>', '</div>',
@@ -481,7 +490,8 @@ def build_index(summaries):
         search = fold(' '.join([s['journal'], s['publisher'], s['issn'], s['print_issn']]))
         out.append(f'<li data-text="{html.escape(search)}"><a class="t" href="{s["slug"]}/index.html">{html.escape(s["journal"])}</a>{meta}</li>')
     out.append('</ol>\n</main>')
-    return page(site['index_title'], '\n'.join(out), 'journals')
+    css = INDEX_SEARCH_CSS if CFG['search']['enabled'] and CFG['search']['index_link'] else ''
+    return page(site['index_title'], '\n'.join(out), 'journals', extra_css=css)
 
 
 def main():

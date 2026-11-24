@@ -32,7 +32,7 @@ DEFAULTS = {
         'pilot': '',                  # journal folder written to pilot_kbart.txt for a first test upload
     },
     'search': {                       # article search through the WorldCat Discovery API (see README, article search)
-        'enabled': False,             # true adds the index link below; build the page with scripts/build_search.py
+        'enabled': False,             # true adds a search box to the index; build the page with scripts/build_search.py
         'db_ids': [],                 # Discovery database (target) IDs to search
         'item_sub_type': 'artchap-artcl',  # journal articles
         'held_by_institution': '',    # your registry ID: only items your library holds
@@ -40,7 +40,7 @@ DEFAULTS = {
         'proxy_login': '',            # e.g. https://proxy.example.edu/login?url= for the research-guide search box
         'title': 'Article search',    # <title> and heading of search.html
         'label': 'Search articles in the archive',
-        'index_link': 'Search articles across all journals',  # link on the index; '' leaves it out
+        'index_link': 'Search articles across all journals',  # label of the search box on the index; '' leaves it out
     },
 }
 
