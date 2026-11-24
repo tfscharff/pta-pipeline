@@ -109,9 +109,14 @@ def main():
              'source': {'sourceTitle': 'Journal of sample studies', 'sourceIssn': '1234-5679', 'relatedParts': ['Vol. 1, no. 1 (2001), p. 1-20']}},
             {'title': 'Held elsewhere', 'date': '2001', 'source': {'sourceTitle': 'Other Journal', 'sourceIssn': '9999-9999'}},
             {'title': 'Outside our years', 'date': '2003', 'source': {'sourceTitle': 'The Journal of Sample Studies'}},
-            {'title': 'Volume Two Opens', 'date': '2002', 'source': {'sourceTitle': 'The Journal of Sample Studies', 'volumes': ['2'], 'issues': ['1']}}]}
+            # the live API returns source as a list of partial objects, and contributors as name objects
+            {'title': 'Volume Two Opens', 'date': '2002', 'sourceIssns': ['0000-0019'],
+             'contributors': [{'firstName': {'text': 'Cy'}, 'secondName': {'text': 'Example'}}],
+             'source': [{'relatedParts': ['v2 n1 (2002): 1-15'], 'sourceTitle': 'Other title'}, {'volumes': ['2'], 'issues': ['1']}]}]}
         got = relay.search('sampling', 0, settings, titles, fetch=lambda q, o, s: fake)
         assert [r['title'] for r in got['results']] == ['On Sampling & Its Limits', 'Volume Two Opens'], got
+        second = got['results'][1]
+        assert (second['volume'], second['issue'], second['pages'], second['authors']) == ('2', '1', '1-15', ['Cy Example']), second
         first = got['results'][0]
         assert (first['volume'], first['issue'], first['pages']) == ('1', '1', '1-20'), first
         assert first['link'] == 'sample_studies/index.html?Title=On+Sampling+%26+Its+Limits&volume=1&issue=1&year=2001', first

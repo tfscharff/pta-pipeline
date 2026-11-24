@@ -94,6 +94,32 @@ def discovery(q, offset, settings):
         return json.load(r)
 
 
+def source(rec):
+    """The record's source fields. The API returns a list of partial objects (the spec says one object)."""
+    src = rec.get('source') or {}
+    if isinstance(src, dict):
+        return src
+    out = {}
+    for s in src:
+        for k, v in (s or {}).items():
+            out.setdefault(k, v)
+    return out
+
+
+def authors(rec):
+    names = []
+    for c in rec.get('contributors') or []:
+        if isinstance(c, str):
+            names.append(c)
+        elif isinstance(c, dict):
+            n = ' '.join(x.get('text', '') for x in (c.get('firstName') or {}, c.get('secondName') or {}) if isinstance(x, dict)).strip()
+            if n:
+                names.append(n)
+    if rec.get('creator') and not names:
+        names.append(rec['creator'])
+    return names
+
+
 def parts(src):
     """Volume, issue and pages of an article, from the structured fields or the "Vol. 7, no. 10 (2012), p. 1-9" text."""
     vol = (src.get('volumes') or [''])[0]
@@ -104,17 +130,17 @@ def parts(src):
         m = re.search(r'\bv(?:ol)?\.?\s*(\w+)', text, re.I)
         vol = m.group(1) if m else ''
     if not issue:
-        m = re.search(r'\b(?:no|nr|issue)\.?\s*([\w/-]+)', text, re.I)
+        m = re.search(r'\b(?:no|nr|n|issue)\.?\s*(\d[\w/-]*)', text, re.I)
         issue = m.group(1) if m else ''
-    if not pages:
-        m = re.search(r'\b(?:p|pp|s|str)\.?\s*([\w]+\s*-\s*[\w]+|\w+)', text, re.I)
+    if not pages:  # "p. 1-20" or "v38 n2 (2015): 267-272"
+        m = re.search(r'\b(?:p|pp|s|str)\.?\s*(\w+\s*-\s*\w+|\w+)', text, re.I) or re.search(r':\s*(\w+\s*-\s*\w+)', text)
         pages = m.group(1) if m else ''
     return vol.strip(), issue.strip(), re.sub(r'\s+', '', pages)
 
 
 def match(rec, titles):
     """The archive journal an article belongs to, or None."""
-    src = rec.get('source') or {}
+    src = source(rec)
     for i in [src.get('sourceIssn', ''), *(rec.get('sourceIssns') or []), *(rec.get('issns') or [])]:
         slug = titles['issn'].get(issn_key(i))
         if slug:
@@ -131,12 +157,10 @@ def result(rec, titles):
     year = (re.search(r'\b(1[6-9]\d\d|20\d\d)\b', rec.get('date') or '') or [''])[0]
     if year and j['years'] and year not in j['years']:
         return None
-    vol, issue, pages = parts(rec.get('source') or {})
+    vol, issue, pages = parts(source(rec))
     title = re.sub(r'\s*[/:;,.]\s*$', '', rec.get('title') or '').strip()
     query = {k: v for k, v in (('Title', title), ('volume', vol), ('issue', issue), ('year', year)) if v}
-    authors = [rec['creator']] if rec.get('creator') else []
-    authors += [c for c in (rec.get('contributors') or []) if isinstance(c, str)]
-    return {'title': title, 'authors': authors, 'journal': j['title'], 'volume': vol, 'issue': issue, 'year': year,
+    return {'title': title, 'authors': authors(rec), 'journal': j['title'], 'volume': vol, 'issue': issue, 'year': year,
             'pages': pages, 'link': f"{slug}/index.html?{urllib.parse.urlencode(query)}"}
 
 
