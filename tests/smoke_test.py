@@ -122,6 +122,12 @@ def main():
         assert first['link'] == 'sample_studies/index.html?Title=On+Sampling+%26+Its+Limits&volume=1&issue=1&year=2001', first
         assert got['next'] == 50 and got['checked'] == 4, got
         assert relay.handler({'queryStringParameters': {}})['statusCode'] == 400
+        # advanced search: a journal limit becomes its ISSNs and, with no years given, the years held
+        assert relay.limits('ti:(sampling)', 'sample_studies', '', '', titles) == \
+            ('(ti:(sampling)) AND (in:0000-0019 OR in:1234-5679)', '2001-2005')
+        assert relay.limits('x', '', '2010', '2001', titles) == ('x', '2001-2010')
+        assert relay.limits('x', '', '19', '', titles) == ('x', '')
+        assert 'search.html?adv=1' in (t / 'search' / 'widget.html').read_text(encoding='utf-8')
     print('smoke test passed')
 
 

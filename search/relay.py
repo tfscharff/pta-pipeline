@@ -88,7 +88,9 @@ def discovery(q, offset, settings):
         params['itemSubType'] = settings['item_sub_type']
     if settings.get('held_by_institution'):
         params['heldByInstitutionID'] = settings['held_by_institution']
-    req = urllib.request.Request(f'{SEARCH_URL}?{urllib.parse.urlencode(params)}',
+    if settings.get('dates'):  # per request, set by search()
+        params['datePublished'] = settings['dates']
+    req =urllib.request.Request(f'{SEARCH_URL}?{urllib.parse.urlencode(params)}',
                                  headers={'Authorization': f'Bearer {token()}', 'Accept': 'application/json'})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
@@ -164,8 +166,32 @@ def result(rec, titles):
             'pages': pages, 'link': f"{slug}/index.html?{urllib.parse.urlencode(query)}"}
 
 
-def search(q, offset, settings, titles, fetch=discovery):
-    data = fetch(q, offset, settings)
+def year(s):
+    return s if re.fullmatch(r'1[5-9]\d\d|20\d\d', (s or '').strip()) else ''
+
+
+def limits(q, journal, lo, hi, titles):
+    """The query with a journal limit added (by its ISSNs), and the datePublished range.
+
+    A journal with no years given is limited to the years the archive holds, so its newer issues
+    don't crowd out the ones we have."""
+    lo, hi = year(lo), year(hi)
+    j = titles['journals'].get(journal)
+    if j:
+        issns = sorted(k for k, v in titles['issn'].items() if v == journal)
+        clause = ' OR '.join(f'in:{i[:4]}-{i[4:]}' for i in issns) or f'so:"{j["title"]}"'
+        q = f'({q}) AND ({clause})' if q else f'({clause})'
+        if not lo and not hi and j['years']:
+            lo, hi = j['years'][0], j['years'][-1]
+    if lo and hi and lo > hi:
+        lo, hi = hi, lo
+    dates = f'{lo or "1500"}-{hi or "2099"}' if lo or hi else ''
+    return q, dates
+
+
+def search(q, offset, settings, titles, fetch=discovery, journal='', lo='', hi=''):
+    q, dates = limits(q, journal, lo, hi, titles)
+    data = fetch(q, offset, {**settings, 'dates': dates})
     recs = data.get('briefRecords') or []
     out = [r for r in (result(rec, titles) for rec in recs) if r]
     total = int(data.get('numberOfRecords') or 0)
@@ -180,16 +206,17 @@ def reply(status, body):
 
 def handler(event, context=None):
     p = event.get('queryStringParameters') or {}
-    q = (p.get('q') or '').strip()[:500]
-    if not q:
-        return reply(400, {'error': 'Type something to search for.'})
+    q = (p.get('q') or '').strip()[:1000]
+    journal = (p.get('j') or '').strip()
+    settings, titles = load()
+    if not q and journal not in titles['journals']:
+        return reply(400, {'error': 'Type something to search for, or choose a journal.'})
     try:
         offset = max(0, min(int(p.get('offset') or 0), 5000))
     except ValueError:
         offset = 0
-    settings, titles = load()
     try:
-        return reply(200, search(q, offset, settings, titles))
+        return reply(200, search(q, offset, settings, titles, journal=journal, lo=p.get('from', ''), hi=p.get('to', '')))
     except urllib.error.HTTPError as e:
         detail = e.read().decode('utf-8', 'replace')[:500]
         print(f'OCLC HTTP {e.code}: {detail}')
