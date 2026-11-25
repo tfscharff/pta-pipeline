@@ -22,6 +22,7 @@ Before committing, check that `git grep -i` finds none of the deployment's names
 
 ```
 python tests/smoke_test.py                                  # end-to-end check with made-up data, standard library only
+python tests/unit_test.py                                   # unittest: helpers, edge cases, KBART format, manifests, restore check, relay (no AWS, no network)
 python scripts/build_pages.py --slug <journal folder>       # rebuild one journal page from the cache
 python scripts/build_pages.py --all --fetch --upload --tmp <dir>
 python scripts/build_kbart.py --kbart work/<export>.txt
@@ -66,7 +67,7 @@ anything: rebuilding and uploading pages is a separate step the user starts. Rel
 change to `scripts/`, `search/`, `profiles/`, `infra/` or `config.example.json`. A change to docs
 or tests alone needs no release.
 
-1. Run `python tests/smoke_test.py`; do not release if it fails.
+1. Run `python tests/smoke_test.py` and `python tests/unit_test.py`; do not release if either fails.
 2. Pick the new version by Semantic Versioning 2.0.0: a fix is a patch, a new feature or option
    is a minor, and a change that breaks an existing `config.json`, profile or link scheme is a
    major.
