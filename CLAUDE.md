@@ -58,3 +58,21 @@ Generated pages are byte-for-byte reproducible from the caches. After changing `
   - creating or deleting CloudFront or WAF resources.
 - Read-only AWS calls (`list-*`, `get-*`, `head-object`) need no confirmation.
 - Before running a mutating script against a real bucket, offer a dry-run mode or a small test prefix first.
+
+## Releasing
+
+A release is a version bump and a tag. There is no package, and a release does not deploy
+anything: rebuilding and uploading pages is a separate step the user starts. Release after a
+change to `scripts/`, `search/`, `profiles/`, `infra/` or `config.example.json`. A change to docs
+or tests alone needs no release.
+
+1. Run `python tests/smoke_test.py`; do not release if it fails.
+2. Pick the new version by Semantic Versioning 2.0.0: a fix is a patch, a new feature or option
+   is a minor, and a change that breaks an existing `config.json`, profile or link scheme is a
+   major.
+3. Write it to `VERSION` (one line, no `v`). That file is the only place the version is written.
+4. Commit that one file as `chore(release): vX.Y.Z`.
+5. Tag the commit with an annotated tag: `git tag -a vX.Y.Z -m "pta-pipeline X.Y.Z"`.
+6. Push the commit and the tag together: `git push --follow-tags`.
+
+The tag message and commit message stay generic, like every tracked file: no deployment names.
