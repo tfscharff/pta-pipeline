@@ -204,9 +204,10 @@ The page builder then handles the rest, including three things that turned out t
 
 ```
 python tests/smoke_test.py
+python tests/unit_test.py
 ```
 
-It builds pages and a KBART from made-up articles with the default profile, using only the standard library.
+The smoke test builds pages and a KBART from made-up articles with the default profile. The unit tests (`unittest`) cover the edge cases: config loading, the default profile on unusual pages, listing parsing, page building, coverage runs, the KBART files' format and entry choice, Batch Operations manifests, the restore check and the search relay. Both use only the standard library and made-up data, and neither calls AWS or the network.
 
 ## License
 
